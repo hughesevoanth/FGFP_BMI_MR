@@ -1,0 +1,283 @@
+---
+title: "Population Description"
+author: "David Hughes"
+date: "3/16/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#### LIBRARIES
+library(tidyverse)
+
+#### Parameters
+source("parameters/pfile.sh")
+source("load.R")
+```
+
+
+## Population Description
+
+```{r}
+sum( is.na(study_data$clinical_data$sex) )
+table( study_data$clinical_data$sex )
+table( study_data$clinical_data$imputed_sex )
+
+```
+
+
+```{r}
+mci = function(x, dig = 2){
+  m = mean(x, na.rm = TRUE)
+  ci = quantile(x, probs = c(0.025, 0.975), na.rm = TRUE)
+  out = paste0( round(m, d = dig), " (", round(ci[1],d=dig), "-", round(ci[2],d=dig), ")" )
+  return(out)
+}
+###
+a = study_data$clinical_data %>% 
+  summarise( sex = "all", mean_age = mci(age),
+              mean_height = mci(Height),
+              mean_weight = mci(Weight),
+              mean_bmi = mci(BMI),
+             mean_hh = mci(house_hold_monthl_net_income, dig = 3)
+               ) 
+####
+bs = study_data$clinical_data %>% 
+  group_by(sex) %>% 
+  summarise( mean_age = mci(age),
+              mean_height = mci(Height),
+              mean_weight = mci(Weight),
+              mean_bmi = mci(BMI),
+             mean_hh = mci(house_hold_monthl_net_income, dig = 3)
+               ) 
+
+### combine
+x = rbind(a, bs)
+
+## table
+x %>%  knitr::kable() %>%
+  kableExtra::kable_classic()
+
+
+```
+
+## Smoking Summary (Never Ever Current) smoking numbers 
+
+```{r}
+cat( paste0( "all") )
+table(study_data$clinical_data$smoking_never_ever_current)
+
+cat( paste0( "\nfemale") )
+w = which(study_data$clinical_data$sex == "female")
+table(study_data$clinical_data$smoking_never_ever_current[w])
+
+cat( paste0( "\nmale") )
+w = which(study_data$clinical_data$sex == "male")
+table(study_data$clinical_data$smoking_never_ever_current[w])
+
+cat( paste0( "\nNA") )
+w = which( is.na(study_data$clinical_data$sex )) 
+table(study_data$clinical_data$smoking_never_ever_current[w])
+
+```
+
+
+## Household Education
+
+```{r}
+cat( paste0( "all") )
+table(study_data$clinical_data$house_hold_monthl_net_income)
+
+cat( paste0( "\nfemale") )
+w = which(study_data$clinical_data$sex == "female")
+table(study_data$clinical_data$house_hold_monthl_net_income[w])
+
+cat( paste0( "\nmale") )
+w = which(study_data$clinical_data$sex == "male")
+table(study_data$clinical_data$house_hold_monthl_net_income[w])
+
+cat( paste0( "\nNA") )
+w = which( is.na(study_data$clinical_data$sex )) 
+table(study_data$clinical_data$house_hold_monthl_net_income[w])
+
+```
+
+
+
+
+# Variance explained in exposure by instrument
+
+## Yengo BMI and Height
+
+```{r}
+d = data.frame( id = rownames(study_data$clinical_data) ,
+                bmi = study_data$clinical_data$BMI, 
+                height = study_data$clinical_data$Height,
+                whr = study_data$clinical_data$WHR,
+                whradjbmi = study_data$clinical_data$WHRadjBMI,
+                sex = study_data$clinical_data$sex, 
+                imputed_sex = study_data$clinical_data$imputed_sex,
+                age = study_data$clinical_data$age,
+                yengo = study_data$grs_data$yengo_BMI_wGRS_info_hwe_filtered,
+                pulit = study_data$grs_data$pruit_BMI_wGRS_info_hwe_filtered,
+                pulit_f = study_data$grs_data$pruit_BMI_females_wGRS_info_hwe_filtered,
+                pulit_m = study_data$grs_data$pruit_BMI_males_wGRS_info_hwe_filtered,
+                yengo_h = study_data$grs_data$yengo_height_wGRS_info_hwe_filtered,
+                pulit_whr = study_data$grs_data$pruit_WHR_wGRS_info_hwe_filtered,
+                pulit_whradjbmi = study_data$grs_data$pruit_whradjbmi_wGRS_info_hwe_filtered,
+                pc1 = study_data$clinical_data$PC1,
+                pc2 = study_data$clinical_data$PC2,
+                pc3 = study_data$clinical_data$PC3,
+                pc4 = study_data$clinical_data$PC4 )
+rownames(d) = d$id
+
+```
+
+
+```{r}
+
+cat(paste0("BMI in both sexes\n"))
+fit = lm( bmi ~ yengo, data = d )
+s = summary(fit); s$r.squared
+
+cat(paste0("Height in both sexes\n"))
+fit = lm( height ~ yengo, data = d )
+s = summary(fit); s$r.squared
+
+
+```
+
+##  BMI multivariable eta-squared
+
+```{r}
+fit = lm( bmi ~ sex + age + yengo, data = d )
+a = anova(fit)
+ss = a[,2]; names(ss) = rownames(a)
+## eta-squared
+ss/sum(ss)
+
+```
+
+## R2 on BMI residuals
+
+```{r}
+fit = lm( bmi ~ sex + age , data = d )
+res = residuals(fit)
+##
+m = match(names(res), d$id )
+fit2 = lm( res ~ d$yengo[m] )
+s = summary(fit2); s$r.squared
+
+```
+
+
+
+## Pulit BMI
+
+```{r}
+f = which(study_data$clinical_data$imputed_sex == "female")
+m = which(study_data$clinical_data$imputed_sex == "male")
+###
+cat(paste0("BMI in both sexes\n"))
+fit = lm( bmi ~ pulit, data = d )
+s = summary(fit); s$r.squared
+
+cat(paste0("\nBMI in females\n"))
+fit = lm( bmi ~ pulit_f, data = d[f,] )
+s = summary(fit); s$r.squared
+
+cat(paste0("\nBMI in males\n"))
+fit = lm( bmi ~ pulit_m, data = d[m,] )
+s = summary(fit); s$r.squared
+
+```
+
+##  BMI multivariable eta-squared
+
+```{r}
+fit = lm( bmi ~ sex + age + age^2 + pulit, data = d )
+
+a = anova(fit)
+ss = a[,2]; names(ss) = rownames(a)
+## eta-squared
+ss/sum(ss)
+
+```
+
+## R2 on BMI residuals
+
+```{r}
+fit = lm( bmi ~ sex + age + age^2 , data = d )
+res = rntransform( residuals(fit) )
+##
+m = match(names(res), d$id )
+fit2 = lm( res ~ d$pulit[m] )
+s = summary(fit2); s$r.squared
+
+```
+
+
+## Pulit WHR
+
+```{r}
+f = which(study_data$clinical_data$imputed_sex == "female")
+m = which(study_data$clinical_data$imputed_sex == "male")
+
+###
+cat(paste0("BMI in both sexes\n"))
+fit = lm( study_data$clinical_data$WHR ~ study_data$grs_data$pruit_WHR_wGRS_info_hwe_filtered )
+s = summary(fit); s$r.squared
+
+cat(paste0("\nBMI in females\n"))
+fit = lm( study_data$clinical_data$WHR[f] ~ study_data$grs_data$pruit_WHR_females_wGRS_info_hwe_filtered[f] )
+s = summary(fit); s$r.squared
+
+cat(paste0("\nBMI in males\n"))
+fit = lm( study_data$clinical_data$WHR[m] ~ study_data$grs_data$pruit_WHR_males_wGRS_info_hwe_filtered[m] )
+s = summary(fit); s$r.squared
+
+```
+
+
+## Pulit WHRadjBMI
+
+```{r}
+f = which(study_data$clinical_data$imputed_sex == "female")
+m = which(study_data$clinical_data$imputed_sex == "male")
+
+###
+cat(paste0("BMI in both sexes\n"))
+fit = lm( study_data$clinical_data$WHRadjBMI ~ study_data$grs_data$pruit_whradjbmi_GRS_info_hwe_filtered )
+s = summary(fit); s$r.squared
+
+cat(paste0("\nBMI in females\n"))
+fit = lm( study_data$clinical_data$WHRadjBMI[f] ~ study_data$grs_data$pruit_whradjbmi_females_wGRS_info_hwe_filtered[f] )
+s = summary(fit); s$r.squared
+
+cat(paste0("\nBMI in males\n"))
+fit = lm( study_data$clinical_data$WHRadjBMI[m] ~ study_data$grs_data$pruit_whradjbmi_males_wGRS_info_hwe_filtered[m] )
+s = summary(fit); s$r.squared
+
+```
+
+## Correlation between the Yengo and Pulit BMI PGS score
+
+```{r}
+cor.test(study_data$grs_data$yengo_BMI_wGRS, study_data$grs_data$pruit_BMI_wGRS )
+```
+
+## INFO and HWE filtered PGS
+
+```{r}
+cor.test(study_data$grs_data$yengo_BMI_wGRS_info_hwe_filtered, study_data$grs_data$pruit_BMI_wGRS_info_hwe_filtered )
+```
+
+
+```{r, figwidth = 8, fig.height = 7}
+mt_data %>% ggplot(aes(x = MDS1, y = MDS2, color = EnterotypeClass)) +
+  geom_point(size = 4, alpha = 0.8) +
+  scale_color_brewer(palette = "Set1")
+  
+```
+
