@@ -1,19 +1,23 @@
-# FGFP BMI --> Microbiome Mendelian Randomization
+# BMI --> Microbiota Trait Mendelian Randomization
 
-## research question
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15311504.svg)](https://doi.org/10.5281/zenodo.15311504)
+
+
+## Research Question
 Does elevated levels of adiposity, as measured by BMI, have an observational and causal effect on gut microbiome variation?
 
-### objective
+### Objective
 A one-sample MR of BMI(GRS) to microbiome traits, using the FGFP data set. 
 
 Here we will be evaluating the observational and causal relationship between BMI-G(R)S and each mirobiome trait (PA, AB, diversity, and enterotypes), individually. 
 
-### study
+### Study
 1. Flemish gut flora project (FGFP)
 	* data from the lab of Jeroen Raes.
 2. N = ~2200
 		
-### study data
+### Study Data
 1. microbiome traits
 2. clinical/questionarie data
 	* BMI
@@ -25,7 +29,7 @@ Here we will be evaluating the observational and causal relationship between BMI
 	* Yengo et al; n = 656
 	* Pulit et al; n = 670
 	
-### developers
+### Developers
 1. David A Hughes
 2. Laura Corbin
 3. Sebastian Proost
