@@ -11,9 +11,12 @@ dh_forrest_plot = function(data,
                            column_4_x = "analysis",
                            column_4_color = "analysis",
                            col_count = 1,
-                           color_choices = NA){
+                           color_choices = NA,
+                           label_size = 10, 
+                           traits_2_plot = NA,
+                           point_size = 0.5){
   
-  if(filter_data == TRUE){
+  if(filter_data == TRUE & is.na(traits_2_plot[1])){
     ## identify the data to plot by alpha (p-value) and analysis focus
     outcomes2plot = as.character( unlist( tibble(data) %>%
                                             filter(pval <= alpha & analysis %in% analysis_type ) %>%
@@ -27,7 +30,20 @@ dh_forrest_plot = function(data,
     ## Set metabolite plotting order
     plot_data$outcome = factor(plot_data$outcome, levels = outcomes2plot)
   }else{
+    if(filter_data == TRUE & !is.na(traits_2_plot[1]) ){
+      ## identify the data to plot by alpha (p-value) and analysis focus
+      outcomes2plot = traits_2_plot
+      
+      ## define plot data
+      ## define pdata; used from making plot
+      w = which(data$outcome %in% outcomes2plot)
+      plot_data = tibble( data[w, ] )
+      
+      ## Set metabolite plotting order
+      plot_data$outcome = factor(plot_data$outcome, levels = outcomes2plot)
+    }else{
     plot_data = tibble( data )
+    }
   }
   
   #################
@@ -35,7 +51,7 @@ dh_forrest_plot = function(data,
   #################
   rowcount = nrow(plot_data)
   l = length( unique( unlist(plot_data[, column_4_color] )) )
-  if( is.na(color_choices) ){
+  if( is.na(color_choices[1]) ){
     pcol = RColorBrewer::brewer.pal(l, "Set1")[l:1]
   } else {
     pcol = color_choices[l:1]
@@ -48,7 +64,7 @@ dh_forrest_plot = function(data,
   PLOT = plot_data %>% ggplot( aes_string(x = column_4_x, y = "beta",
                                           ymin = "lowerCI" , ymax = "upperCI" ) ) +
     #geom_pointrange( aes( col = analysis , shape = sig ) , size = 1) +
-    geom_pointrange( aes_string( col = column_4_color , shape = "sig" ) , size = 0.5) +
+    geom_pointrange( aes_string( col = column_4_color , shape = "sig" ) , size = point_size) +
     # scale_size(range = c(0.5, 1.5)) +
     scale_colour_manual( values = pcol ) +
     scale_shape_manual( values = c( not_sig = 21, sig = 19), drop = FALSE ) +
@@ -64,7 +80,7 @@ dh_forrest_plot = function(data,
     coord_flip() +
     labs(shape = "significance") +
     guides(colour = guide_legend(reverse = T)) +
-    theme(strip.text.y.left = element_text(angle = 0))
+    theme(strip.text.y.left = element_text(angle = 0, size = label_size))
   
   if( !is.na(title) ){
     PLOT = PLOT + labs( title  = title )

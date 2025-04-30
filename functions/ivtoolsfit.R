@@ -8,6 +8,7 @@ ivtoolsfit = function( wdata,
                        weights = NA,
                        rnt_outcome = FALSE){
 
+  # cat( paste0( outcome, "\n" ) )
   ### Define the model data
   model_variables = na.omit( c(outcome, exposure, instrument, covariates, weights) )
   mod_data = na.omit( wdata[, c(model_variables)] )
@@ -15,6 +16,7 @@ ivtoolsfit = function( wdata,
   ############################################
   ## I. rank normalize the dependent|outcome ?
   ############################################
+  # cat(paste0("Step 1\n"))
   if(outcome_model_family == "gaussian" & rnt_outcome == TRUE){
     set.seed(2022)
     mod_data[, outcome] = rntransform( mod_data[, outcome] )
@@ -31,6 +33,7 @@ ivtoolsfit = function( wdata,
   ### III. Build STAGE ONE
   ##      model
   ########################
+  # cat(paste0("Step 2\n"))
   if( length(na.omit(covariates))>0 ){
     S1_form = formula(paste0( exposure, " ~ ", paste0( covariates, collapse = " + ") , "+", instrument ) )
   } else {
@@ -40,6 +43,7 @@ ivtoolsfit = function( wdata,
   #########################
   ## IV. RUN STAGE ONE
   #########################
+  # cat(paste0("Step 3\n"))
   ## STAGE ONE
   if( is.na( weights) ){
     fitX.LZ <- glm(formula = S1_form , data = mod_data, family = exposure_model_family)
@@ -53,6 +57,7 @@ ivtoolsfit = function( wdata,
   ## Extract Exposure on Instrument (ei)
   ## Summary Statistics
   #########################
+  # cat(paste0("Step 4\n"))
   res = residuals(fitX.LZ)
   ei_n = length(res)
   names(ei_n) = "ei_n"
@@ -73,8 +78,10 @@ ivtoolsfit = function( wdata,
   
   ########################
   ### V Build STAGE TWO
-  ##      model
+  ##      model 
+  ##   (!! OLS !!)
   ########################
+  # cat(paste0("Step 5\n"))
   if( length(na.omit(covariates))>0 ){
     S2_form = formula(paste0( outcome, " ~ ", paste0( covariates, collapse = " + ") ,"+" , exposure ) )
   } else {
@@ -84,7 +91,8 @@ ivtoolsfit = function( wdata,
   #########################
   ## VI. RUN STAGE TWO
   #########################
-  ## STAGE ONE
+  # cat(paste0("Step 6\n"))
+  ## STAGE TWO
   if( is.na( weights) ){
     fitY.LX <- glm(formula = S2_form , data = mod_data, family = outcome_model_family)
   } else {
@@ -93,11 +101,14 @@ ivtoolsfit = function( wdata,
   }
   
   #########################
-  ## Va.
+  ## VIa.
+  ## ---
   ## Extract Observational 
-  ## regress outcome on exposure (oe)
   ## Summary Statistics
+  ## ---
+  ## regress outcome on exposure (oe)
   #########################
+  # cat(paste0("Step 7\n"))
   ## Sample Size
   res = residuals(fitY.LX)
   oe_n = length(res)
@@ -139,7 +150,6 @@ ivtoolsfit = function( wdata,
   oe_Wald_F_test = c(oe_Wald_F_test$F[2], oe_Wald_F_test$`Pr(>F)`[2])
   names(oe_Wald_F_test) = c("oe_Wald_F", "oe_Wald_P")
   
-  
   ## Variance Explained (eta-sq  or R2)
   ss = a[,1]
   names(ss) = rownames(a)
@@ -160,11 +170,13 @@ ivtoolsfit = function( wdata,
   #########################
   ## VII. RUN MR model
   #########################
+  # cat(paste0("Step 8\n"))
   fitIV_ts <- ivtools::ivglm( estmethod = "ts", fitX.LZ = fitX.LZ, fitY.LX = fitY.LX, data = mod_data, ctrl = FALSE  )
   
   ######################
-  ### IV. Summary Stats
+  ### VIII. Summary Stats
   ######################
+  # cat(paste0("Step 9\n"))
   ## IV model summary
   s = summary(fitIV_ts)
   
@@ -177,7 +189,7 @@ ivtoolsfit = function( wdata,
   names(MR_coef) = c("beta","se", cn ,"P")
   names(MR_coef) = paste0("MR_", names(MR_coef) )
     
-  ## The re-ffitted IV model (Y.LX)
+  ## The re-fitted IV model (Y.LX)
   ivmod = fitIV_ts$fitY.LX
   
   ## sample size in model
@@ -225,8 +237,50 @@ ivtoolsfit = function( wdata,
   MR_stats = c(iv_n, Wstat, MR_coef, model_r2, dhat_r2, MR_Fstat, MR_Wald_F_test, Breusch_Pagan_P  )
   
   ############################
-  ## Data OUT
+  ## IX. Wu-Hausman Endogeneity
+  ##     Test
   ############################
+  # cat(paste0("Step 10\n"))
+  ## Observational (OLS) residuals (outcome on exposure and covariates)
+  mod_data$ols_res = residuals( fitY.LX )
+  ## Stage 1 residuals (exposure on instrument + covariates)
+  mod_data$ei_res = residuals( fitX.LZ )
+  
+  ## Define the linear regression formula
+  if( length(na.omit(covariates))>0 ){
+    WHE_form = formula(paste0( "ols_res ~ ", paste0( covariates, collapse = " + ") ,"+" , exposure, " + ei_res" ) )
+  } else {
+    WHE_form = formula( paste0( "ols_res ~ ",  exposure , " + ei_res") )
+  }
+  
+  ## Wu Hausman linear model of residuals
+  if( is.na( weights) ){
+    fit.WHE <- glm(formula = WHE_form , data = mod_data, family = "gaussian" )
+  } else {
+    w = grep( weights, colnames(mod_data) ); colnames(mod_data)[w] = "study_weights"
+    fit.WHE <- glm(formula = WHE_form , data = mod_data, weights = study_weights, family = "gaussian" )
+  }
+  
+  ## Lagrange Multiplier Statistic:
+  s = summary(fit.WHE)
+  ## R^2 from Deviances
+  r2 = 1 - ( s$deviance / s$null.deviance )
+  ## *** Lagrange Multiplier Statistic ***
+  ## ----- Wu_Hausman_stat ------
+  LM = length( residuals(fit.WHE) ) * r2
+  names(LM) = "Wu_Hausman_stat"
+  ## P-value
+  WuH_P = pchisq(q = LM, df = 1, lower.tail = F)
+  names(WuH_P) = "Wu_Hausman_P"
+  
+  
+  ## REDEFINE MR_stats output
+  MR_stats = c(MR_stats, LM, WuH_P)
+  
+  ############################
+  ## X. Data OUT
+  ############################
+  #cat(paste0("Step 11\n"))
   names(exposure) = "MR_exposure"
   names(outcome) = "MR_outcome"
   names(instrument) = "MR_instrument"

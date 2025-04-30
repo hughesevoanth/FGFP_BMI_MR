@@ -23,6 +23,8 @@ grs_prepare_dosage_data = function(
 	## SNP IDs that belong in the GRS
 	############################
 	snps = grs_data[, grs_data_SNP_col_name]
+	all_grs_snps = snps ## a source list to annotate those that are excluded and why.
+	unfiltered_grs_data = grs_data
 	number_of_grs_snps = length(snps)
 
 	############################
@@ -32,6 +34,7 @@ grs_prepare_dosage_data = function(
 	w = which(!snps %in% snpstats_data$rsid)
 	
 	number_of_grs_snps_not_in_dosage = length(w)
+	name_of_grs_snps_not_in_dosage = snps[w]
 
 	if(length(w)>0){ 
 		## If any are abscent remove from gwas snp list
@@ -114,6 +117,8 @@ grs_prepare_dosage_data = function(
 	## remove any rows with NAs
 	############################
 	w = which( apply(qc_dosage_data, 1, function(x){ sum(is.na(x)) == length(x) }) == 1 )
+	names_snp_allele_match_filtering = grs_data[w,"SNP"]
+	
 	if(length(w) > 0){ 
 		qc_dosage_data = qc_dosage_data[-w, ] 
 		grs_data = grs_data[-w, ]
@@ -123,7 +128,7 @@ grs_prepare_dosage_data = function(
 	############################
 	## how many SNP were removed during allele matching?
 	############################
-	snp_allele_match_filtering = length(w)
+	snp_allele_match_filtering = length(names_snp_allele_match_filtering)
 
 	#############################
 	## quick allele match count
@@ -191,7 +196,7 @@ grs_prepare_dosage_data = function(
 	beta = abs( as.numeric( as.character( grs_data[ , grs_data_BETA_col_name] ) ) )
 
 	#############################
-	## estiamte GRS
+	## estimate GRS
 	#############################
 	grs = t( apply(qc_dosage_data_pos_beta[, 7:ncol(qc_dosage_data_pos_beta) ], 2 , function(dos){
 		un_w_grs = sum(dos, na.rm = TRUE)
@@ -227,7 +232,7 @@ grs_prepare_dosage_data = function(
 	## how many SNP were removed during allele matching?
 	############################
 	snp_info_hwe_filtering = length(w)
-
+	name_of_snp_info_hwe_filtering = snpstats_data$rsid[w]
 	#############################
 	## Identify snps to filter out in the GRS data frame
 	#############################
@@ -283,8 +288,32 @@ grs_prepare_dosage_data = function(
 		number_of_allele_matched_snps_in_grs = number_of_allele_matched_snps_in_qc_dosage_data,
 		number_of_grs_snps_filtered_for_info_hwe = snp_info_hwe_filtering,
 		number_of_allele_matched_snps_in_filtered_grs = number_of_allele_matched_snps_in_qc_dosage_data - snp_info_hwe_filtering ) )
+	
+	## What SNPs filtered and why ?
+	filtered_snp_ids = data.frame(rsids = all_grs_snps, 
+	                              snps_not_genotyped = 0,
+	                              snps_w_allele_or_EAF_mismatches = 0,
+	                              snps_filtered_for_info_or_hwe = 0
+	                              )
+	if( length(name_of_grs_snps_not_in_dosage) > 0 ){
+	  w = which(all_grs_snps %in% name_of_grs_snps_not_in_dosage)
+	  filtered_snp_ids$snps_not_genotyped[w] = 1
+	}
+	if( length(names_snp_allele_match_filtering) > 0 ){
+	  w = which(all_grs_snps %in% names_snp_allele_match_filtering)
+	  filtered_snp_ids$snps_w_allele_or_EAF_mismatches[w] = 1
+	}
+	if( length(name_of_snp_info_hwe_filtering) > 0 ){
+	  w = which(all_grs_snps %in% name_of_snp_info_hwe_filtering)
+	  filtered_snp_ids$snps_filtered_for_info_or_hwe[w] = 1
+	}
+	
+	### Add filtered data to the unfiltered_grs_data table
+	m = match(unfiltered_grs_data$SNP, filtered_snp_ids$rsids)
+	unfiltered_grs_data = cbind(unfiltered_grs_data,filtered_snp_ids[m, -1] )
+	
 
-	return( list( grs = grs, sumstats = sumstats)  )
+	return( list( grs = grs, sumstats = sumstats, grs_data_with_filtering_information = unfiltered_grs_data)  )
 
 } ## END OF FUNCTION
 

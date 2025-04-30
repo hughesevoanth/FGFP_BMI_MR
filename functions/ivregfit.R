@@ -66,7 +66,7 @@ ivregfit = function( wdata,
   WeakInst = diag_test[1, c(3,1,2,4)]
   names(WeakInst) = c("WeakInst_Fstat","WeakInst_df1","WeakInst_df2","WeakInst_P")
   ## Wu Hausman Endogeneity Test
-  Wu_Hausman = diag_test[1, c(3,2,1,4)]
+  Wu_Hausman = diag_test[2, c(3,1,2,4)]
   names(Wu_Hausman) = c("Wu_Hausman_stat","Wu_Hausman_df1","Wu_Hausman_df2","Wu_Hausman_P")
 
   ## Sandwich co-variance matrix
