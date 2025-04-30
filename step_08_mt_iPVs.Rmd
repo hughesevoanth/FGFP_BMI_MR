@@ -1,0 +1,188 @@
+---
+title: "MT iPVs"
+author: "David Hughes"
+date: "3/16/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(iPVs)
+source("load.R")
+```
+
+## Build the Enterotype binary traits
+
+```{r}
+mt_data = study_data$study_micro_data
+dim(mt_data)
+```
+
+
+```{r}
+## identify the primary traits
+w = which(colnames(mt_data) %in% study_data$primary_traits)
+## include the beta and diversity metrics
+d = c(7:11)
+## include the binary enterotypes
+e = c(3:6)
+
+mt_data = mt_data[,c( d,e,w )]
+# mt_data = study_data$study_mt_data
+for(i in 1:ncol(mt_data)){ mt_data[,i] = as.numeric(mt_data[,i]) }
+
+dim(mt_data)
+```
+
+## iPVs
+
+```{r}
+library(iPVs)
+
+s = seq(0.5, 0.8, by = 0.05)
+##
+mypvs = iPVs(mt_data, 
+	cor_method = "spearman", 				## you can choose spearman or pearson
+	dist_method = "R", 					## you can choose 'R' (1-abs(R)) or 'R2' (R*R)
+	hclust_meth = "complete", 				## you can choose 'complete', 'average' (UPGMA), or 'mcquitty' (WPGMA)
+	cutheight  = s 			## 1 or a series of cut heights
+	)
+
+```
+
+
+
+
+```{r}
+## load a needed R package
+library(dendextend)
+
+mydends = lapply(mypvs, function(x){
+	## extract the IDs for your PVs
+	pv_ids = as.character(x$iPV_table$PVs )
+
+	## define your tree as a dendrogram
+	dend = x$workingdata$tree %>% as.dendrogram
+
+	## create a vector of colors to color your tree labels
+	n = labels(dend)
+	pcol = rep("black", length(n))
+	w = which(n %in% pv_ids ); pcol[w] = "medium blue"
+
+	## redefine elements of dendrogram
+	dend = dend %>% 
+	set("labels_cex", 0.5) %>% 
+	set("labels_col", pcol) %>% 
+	set("branches_k_color",  value = pcol)
+
+	## return dendrogram
+	return(dend)
+})
+```
+
+### How many independent or representative features are there at each cut height?
+
+```{r}
+unlist( lapply(mypvs, function(x){nrow(x$iPV_table)}) )
+
+```
+
+```{r}
+mypvs[[1]]$workingdata$simpleM
+```
+
+
+```{r, fig.width = 17, fig.height = 8}
+## plot 1st dendrogram
+# mydends[[1]] %>% plot(main = paste0( "-- FGFP MTs : ", nrow(mypvs[[1]]$iPV_table)," PVs --" ) )
+# abline(h = 0.5, col = "red", lwd = 3)
+
+## plot 1st dendrogram
+par(mar = c(14,2,2,1))
+mydends[[1]] %>% plot(main = paste0( "-- FGFP MTs : ", nrow(mypvs[[1]]$iPV_table)," PVs --" ) )
+abline(h = 0.5, col = "red", lwd = 3)
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MT_dendrogram_0.5_20240917.pdf")
+pdf(f, width = 20, height = 8)
+par(mar=c(14,2,2,1))
+
+mydends[[1]] %>% plot(main = paste0( "-- FGFP MTs : ", nrow(mypvs[[1]]$iPV_table)," PVs --" ) )
+abline(h = 0.5, col = "red", lwd = 3)
+
+dev.off()
+```
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MT_dendrogram_0.8_20240917.pdf")
+pdf(f, width = 20, height = 8)
+par(mar=c(14,2,2,1))
+
+mydends[[7]] %>% plot(main = paste0( "-- FGFP MTs : ", nrow(mypvs[[7]]$iPV_table)," PVs --" ) )
+abline(h = 0.8, col = "red", lwd = 3)
+
+dev.off()
+```
+
+
+## PCA Method 95% of variance explained
+
+
+```{r}
+pcs = as.data.frame( mypvs[[1]]$workingdata$pca$x[, 1:5])
+pcs$MT = rownames(pcs)
+pcs$trait = "RA"
+w = grep("_AB", pcs$MT); pcs$trait[w] = "AB"
+w = grep("_PA", pcs$MT); pcs$trait[w] = "PA"
+pcs$trait[1:5] = "Div"
+pcs$trait[6:9] = "Entero"
+pcs = as_tibble(pcs)
+varexp = summary(mypvs[[1]]$workingdata$pca)[[6]][2,1:5]
+
+pcol = RColorBrewer::brewer.pal(8, "Set1")
+
+myplot = pcs[319:1,] %>% ggplot(aes(x = PC1, y = PC2)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_point(aes(color = trait), size = 4, alpha = 0.8) +
+  # scale_shape_manual(values = c(15:19) ) + 
+  scale_color_manual(values = pcol[c(2, 5,1,4,3)]) +
+  labs(color = "MT", 
+       x = paste0("PC1; variance explained = ", round(varexp[1],d = 4) * 100 ,"%"),
+       y = paste0("PC2; variance explained = ", round(varexp[2],d = 4) * 100 ,"%") ) +
+  theme_bw() 
+myplot
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MT_PCA_withRatios_20240917.pdf")
+
+pdf(f, width = 6, height = 5)
+myplot
+dev.off()
+```
+
+
+
+## Waffle plot of Metabolon data
+```{r}
+x = study_data$metabolon_feature_data
+a = x |> pull(SUPER_PATHWAY) |> table()
+df = data.frame(SUPER_PATHWAY = names(a), value = as.numeric(a))
+waffle::waffle(parts = df, colors = RColorBrewer::brewer.pal(9, "Set1"), size = 0.5, 
+               rows = 20, title = "Metabolon Super Pathways", legend_pos = "bottom")
+```
+
+```{r}
+a = x |> filter(SUPER_PATHWAY == "Amino Acid") |> pull(SUB_PATHWAY) |> table()
+df = data.frame(SUPER_PATHWAY = names(a), value = as.numeric(a))
+waffle::waffle(parts = df, colors = rainbow(15), size = 0.5, 
+               rows = 14, title = "Metabolon Amino Acid Sub Pathways", legend_pos = "right")
+```
+

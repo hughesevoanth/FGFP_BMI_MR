@@ -1,0 +1,1940 @@
+---
+title: "BMI - MTs Observational Results Summary"
+author: "David Hughes"
+date: "20/09/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ivreg)
+
+source("parameters/pfile.sh")
+source("load.R")
+
+```
+
+
+```{r}
+## Define the MetaData table
+meta_data = study_data$meta_data
+
+## Define the Microbial Trait Data
+mt_data = study_data$study_micro_data
+primary_traits = study_data$primary_traits
+primary_traits = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum",
+                   "Div_NumberGenera","Div_Shannon","Div_Chao1",
+                   "MDS1","MDS2",
+                   primary_traits)
+
+## Define the batch_data table
+batch_data = study_data$batch_data
+for(i in 1:8){ batch_data[,i] = as.factor(batch_data[,i])  }
+```
+
+## Build the working data frame
+
+```{r}
+## working data
+mydata = cbind( meta_data, batch_data, mt_data )
+## we will be using imputed BMI as the default BMI
+w = which(colnames(mydata) == "imputed_BMI_online"); colnames(mydata)[w] = "BMI"
+## we will be using imputed sex as the default sex
+w = which(colnames(mydata) == "imputed_sex"); colnames(mydata)[w] = "sex"
+mydata$sex[mydata$sex == "m"] = "male"
+mydata$sex[mydata$sex == "v"] = "female"
+mydata$sex = as.factor(mydata$sex)
+## we will be using imputed age as the default age
+w = which(colnames(mydata) == "imputed_age"); colnames(mydata)[w] = "age"
+mydata$age = as.numeric(mydata$age)
+
+## alter colnames with a "|" as a function below does not like "|" 
+colnames(mydata) = gsub("\\|","__",colnames(mydata))
+```
+
+### Add a BMI category to mydata 
+
+```{r}
+mydata$bmi_cat = "underweight"
+w = which(mydata$BMI>18 & mydata$BMI<=25); mydata$bmi_cat[w] = "healthy"
+w = which(mydata$BMI>25 & mydata$BMI<=30); mydata$bmi_cat[w] = "overweight"
+w = which(mydata$BMI>30 ); mydata$bmi_cat[w] = "obesity"
+mydata$bmi_cat = factor(mydata$bmi_cat, levels = c("underweight","healthy","overweight","obesity"))
+table(mydata$bmi_cat)
+```
+
+## read in taxonomic data
+
+```{r}
+f = paste0(project_data_dir, "MT_taxonomy_20240920.txt")
+taxonomy = read.table(f, header = TRUE, sep = "\t", as.is = TRUE)
+```
+
+
+## Read in the results
+
+```{r}
+
+f = paste0(project_results_dir, "Derived_Estimates_20240917.Rdata")
+load(file = f)
+## LOADED OBJECT IS A LIST: "Derived_Estimates"
+
+
+# f = paste0(project_results_dir, "BMI_sensitivity_20240919.Rdata")
+f = paste0(project_results_dir, "BMI_sensitivity_20241206.Rdata")
+load(file = f)
+## LOADED OBJECT IS A LIST: "BMI_sensitivity"
+
+```
+
+## Redefine Trait Types in the summary stats result tables
+
+
+```{r}
+for(i in 1:length(Derived_Estimates)){
+  x = Derived_Estimates[[i]]
+  ## Place RA traits into it's own category
+  x$trait_type2 = x$trait_type
+  ## RA
+  w = grep("_RA", x$MR_outcome )
+  x$trait_type2[w] = "RA"
+  
+  ## Place Entero and Div into it's own categories
+  x$trait_type3 = x$trait_type2
+  ## Diversity
+  w = c( grep("MDS", x$MR_outcome ), grep("Div", x$MR_outcome )  )
+  x$trait_type3[w] = "Div"
+  ## Enterotype
+  w = c( grep("Enterotype_", x$MR_outcome  )  )
+  x$trait_type3[w] = "Entero"
+  
+  x$trait_type = factor(x$trait_type, levels = c("AB", "PA"))
+  x$trait_type2 = factor(x$trait_type2, levels = c("AB","RA","PA"))
+  x$trait_type3 = factor(x$trait_type3, levels = c("AB","RA","PA", "Div", "Entero"))
+  ## Redefine
+  Derived_Estimates[[i]] = x
+}
+
+############################
+## Sensitivity Results
+############################
+for(i in 1:length(BMI_sensitivity)){
+  x = BMI_sensitivity[[i]]
+  ## Place RA traits into it's own category
+  x$trait_type2 = x$trait_type
+  ## RA
+  w = grep("_RA", x$MR_outcome )
+  x$trait_type2[w] = "RA"
+  
+  ## Place Entero and Div into it's own categories
+  x$trait_type3 = x$trait_type2
+  ## Diversity
+  w = c( grep("MDS", x$MR_outcome ), grep("Div", x$MR_outcome )  )
+  x$trait_type3[w] = "Div"
+  ## Enterotype
+  w = c( grep("Enterotype_", x$MR_outcome  )  )
+  x$trait_type3[w] = "Entero"
+  
+  x$trait_type = factor(x$trait_type, levels = c("AB", "PA"))
+  x$trait_type2 = factor(x$trait_type2, levels = c("AB","RA","PA"))
+  x$trait_type3 = factor(x$trait_type3, levels = c("AB","RA","PA", "Div", "Entero"))
+  ## Redefine
+  BMI_sensitivity[[i]] = x
+
+}
+
+table(Derived_Estimates$BMI$trait_type)
+table(Derived_Estimates$BMI$trait_type2)
+table(Derived_Estimates$BMI$trait_type3)
+
+Derived_Estimates$BMI |> filter(MR_outcome %in% primary_traits) |> pull(trait_type3) |> table()
+
+```
+
+## Add taxonomic data to the results tables
+
+```{r}
+
+for(i in 1:length(Derived_Estimates)){
+  x = Derived_Estimates[[i]]
+  ## match
+  m = match(x$MR_outcome, taxonomy$trait_name2)
+  x = cbind(x , taxonomy[m,c(3,5:ncol(taxonomy))] )
+
+  ## Redefine
+  Derived_Estimates[[i]] = x
+}
+
+############################
+## Sensitivity Results
+############################
+for(i in 1:length(BMI_sensitivity)){
+  x = BMI_sensitivity[[i]]
+  ## match
+  m = match(x$MR_outcome, taxonomy$trait_name2)
+  x = cbind(x , taxonomy[m,c(3,5:ncol(taxonomy))] )
+
+  ## Redefine
+  BMI_sensitivity[[i]] = x
+
+}
+```
+
+## Merge BMI data together
+
+```{r}
+bmi_merged = rbind(Derived_Estimates$BMI, 
+                   Derived_Estimates$BMI_females, 
+                   Derived_Estimates$BMI_males,
+                   Derived_Estimates$BMI_females_fGRS, 
+                   Derived_Estimates$BMI_males_mGRS )
+
+## Add primary trait annotation
+bmi_merged = bmi_merged |> 
+  mutate(primary_trait = ifelse(MR_outcome %in% primary_traits, 1, 0), .before = "MR_exposure")
+
+## reorder columns
+bmi_merged = bmi_merged[, c(1,2,37:38,3:36,39:50)]
+
+f = paste0(project_results_dir, "tables/bmi_obs_mr_estimates_20250205_w_taxomony.txt")
+write.table(bmi_merged, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+
+## Merge BMI sensitivity data together
+
+```{r}
+bmi_sensitivity_merged = rbind(BMI_sensitivity$BMI, 
+                               BMI_sensitivity$BMI_females, 
+                               BMI_sensitivity$BMI_males,
+                               BMI_sensitivity$BMI_females_fGRS, 
+                               BMI_sensitivity$BMI_males_mGRS)
+## Add primary trait annotation
+bmi_sensitivity_merged = bmi_sensitivity_merged |> 
+  mutate(primary_trait = ifelse(MR_outcome %in% primary_traits, 1, 0), .before = "MR_exposure")
+
+## reorder columns
+bmi_sensitivity_merged = bmi_sensitivity_merged[, c(1,2,37:38,3:36,39:50)]
+
+
+# f = paste0(project_results_dir, "tables/bmi_obs_mr_sensitivity_estimates_20240919_w_taxonomy.txt")
+f = paste0(project_results_dir, "tables/bmi_obs_mr_sensitivity_estimates_20250205_w_taxonomy.txt")
+write.table(bmi_sensitivity_merged, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+
+## Summary Statistics for MTs
+
+```{r}
+## Name of AB traits
+AB_mts = colnames( mydata)[ c( grep("MDS", colnames( mydata) ),  
+                               grep("Div_", colnames( mydata) ),
+                               grep("_AB", colnames( mydata) ),
+                               grep("_RA", colnames( mydata) )) ]
+
+## Name of PA Traits
+PA_mts = colnames( mydata)[ c( grep("PA", colnames( mydata) ) , grep("Enterotype_", colnames( mydata) ) ) ]
+
+## W-stat for AB traits
+# W = apply( mydata[, AB_mts], 2, function(x){ shapiro.test( as.numeric( x[!is.na(x)] )  )$statistic } )
+W = c()
+for(i in AB_mts){
+  # cat(paste0(i, "\n"))
+  o = shapiro.test( as.numeric( mydata[,i] )  )$statistic
+  W = c(W, o)
+}
+names(W) = AB_mts
+## proportion of sample with 0 counts
+# zero_prop = apply(mydata[, AB_mts], 2, function(x){ sum(x == 0, na.rm = TRUE)/sum(!is.na(x)) } )
+# not_zero_prop = apply(mydata[, AB_mts], 2, function(x){ sum(x != 0, na.rm = TRUE)/sum(!is.na(x)) } )
+zero_prop = sapply(AB_mts, function(x){ sum( mydata[, x] == 0, na.rm = TRUE ) / sum(!is.na(mydata[, x])) })
+not_zero_prop = sapply(AB_mts, function(x){ sum( mydata[, x] != 0, na.rm = TRUE ) / sum(!is.na(mydata[, x])) })
+
+## summary stats for AB Traits
+AB_sumstats = psych::describe(mydata[, AB_mts])
+AB_sumstats = as.data.frame(AB_sumstats)
+## Add additional info to sumstats
+AB_sumstats$shapiro_W = W
+AB_sumstats$proportion_zero = zero_prop
+AB_sumstats$proportion_not_zero = not_zero_prop
+AB_sumstats$trait_type = "abundance"
+w = grep("trunc", rownames(AB_sumstats)); AB_sumstats$trait_type[w] = "zero-truncated abundance"
+AB_sumstats$trait_name = rownames(AB_sumstats)
+mt = sapply(rownames(AB_sumstats), function(x){strsplit(x, split = "_0")[[1]][1]})
+mt = sapply(mt, function(x){strsplit(x, split = "_1")[[1]][1]})
+AB_sumstats$trait = mt
+
+mt = gsub("_trunc_AB","",mt); mt = gsub("_AB","",mt); mt = gsub("_RA","",mt)
+AB_sumstats$trait_taxa = mt
+
+## add taxonomy data
+# m = match(rownames(AB_sumstats), taxonomy$outcome)
+m = match( rownames(AB_sumstats), taxonomy$trait_name)
+AB_sumstats = cbind(AB_sumstats, taxonomy[m,5:ncol(taxonomy)])
+
+
+## replace trait names with those that are in the taxonomy file
+m = match( AB_sumstats$trait_name, taxonomy$trait_name)
+AB_sumstats$trait_name = taxonomy$trait_name2[m]
+AB_sumstats$trait_taxa = taxonomy$trait_taxa[m]
+
+w = grep("_RA", AB_sumstats$trait_name)
+AB_sumstats$trait_type[w] = "ratios"
+
+# AB_sumstats = AB_sumstats |> mutate(trait_name = rownames(AB_sumstats), .before = "trait_taxa")
+
+## reorder
+# AB_sumstats = AB_sumstats[, c(20,18,17,15:16,21:25,2:14)]
+AB_sumstats = AB_sumstats[, c(18,20,17,2:16,21:30)]
+
+```
+
+
+```{r}
+f = paste0(project_results_dir, "tables/SupTable1_AB_sumstats_20250205.txt")
+write.table(AB_sumstats, file = f, row.names  = FALSE, col.names = TRUE, sep = "\t", quote = FALSE)
+```
+
+
+```{r}
+## Name of PA Traits
+# PA_mts = colnames( mydata)[ grep("PA", colnames( mydata) ) ]
+PA_mts = colnames( mydata)[ c( grep("PA", colnames( mydata) ) , grep("Enterotype_", colnames( mydata) ) ) ]
+
+mt = sapply( PA_mts, function(x){strsplit(x, split = "_0")[[1]][1]})
+PA_sumstats = data.frame( trait_name = PA_mts, 
+                          trait_taxa = mt, 
+                          trait_type = "presence absence",
+                          n = apply(mydata[, PA_mts], 2, 
+                                                     function(x){ sum(!is.na(x)) }  ),
+                          present_1_count = apply(mydata[, PA_mts], 2, 
+                                                     function(x){ sum(x == 1, na.rm = TRUE) }  ),
+                          absent_0_count = apply(mydata[, PA_mts], 2, 
+                                                    function(x){ sum(x == 0, na.rm = TRUE) }  )
+)
+
+## add taxonomy
+m = match(rownames(PA_sumstats), taxonomy$trait_name)
+PA_sumstats = cbind(PA_sumstats, taxonomy[m,5:ncol(taxonomy)])
+# PA_sumstats = PA_sumstats[, c(2,1,3:ncol(PA_sumstats))]
+
+```
+
+```{r}
+f = paste0(project_results_dir, "tables/SupTable1_PA_sumstats_20250205.txt")
+write.table(PA_sumstats, file = f, row.names  = TRUE, col.names = TRUE, sep = "\t", quote = FALSE)
+```
+
+
+```{r}
+All_sumstats = full_join(AB_sumstats, PA_sumstats, by = c("trait_name", "trait_taxa","trait_type", 
+                                                          "n",
+                                                          "Phylum", "Class","Order","Family","Genus", 
+                                                          "taxa1","taxa2","phylum1","phylum2","phylum_ratio") )
+
+All_sumstats = All_sumstats[, c(1:4, 29:30, 5:28)]
+
+f = paste0(project_results_dir, "tables/SupTable1_ALL_sumstats_20250205.txt")
+write.table(All_sumstats, file = f, row.names  = FALSE, col.names = TRUE, sep = "\t", quote = FALSE)
+
+```
+
+
+
+## BMI MTs observationally associated with BMI
+
+```{r}
+##
+tout = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33) %>% 
+  dplyr::select(MR_outcome, trait_type3, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq) %>% 
+  arrange(trait_type3, oe_P)
+## add taxonomy info
+m = match( rownames(tout), taxonomy$trait_name)
+rownames(tout)  = taxonomy$new_trait_name[m]
+tout = cbind(tout, taxonomy[m, 5:ncol(taxonomy)])
+##
+nrow(tout)
+```
+
+
+## BMI MTs Causally associated with BMI
+
+```{r}
+##
+tout2 = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & MR_P < 0.05/33) %>% 
+  dplyr::select(MR_outcome, trait_type3, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq) %>% 
+  arrange(trait_type3, oe_P)
+## add taxonomy info
+m = match( rownames(tout2), taxonomy$trait_name)
+rownames(tout2)  = taxonomy$new_trait_name[m]
+tout2 = cbind(tout2, taxonomy[m, 5:ncol(taxonomy)])
+##
+nrow(tout2)
+```
+
+## Double Check with bmi_merged
+
+```{r}
+##
+tout2 = bmi_merged |> filter(analysis_name == "all" & MR_outcome %in% primary_traits & MR_P < 0.05/33) %>% 
+  dplyr::select(MR_outcome, trait_type3, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq) %>% 
+  arrange(trait_type3, oe_P)
+## add taxonomy info
+m = match( rownames(tout2), taxonomy$trait_name)
+rownames(tout2)  = taxonomy$new_trait_name[m]
+tout2 = cbind(tout2, taxonomy[m, 5:ncol(taxonomy)])
+##
+nrow(tout2)
+``` 
+
+
+
+```{r}
+cat(paste("The number of positive assocations was: \n"))
+sum(tout$oe_beta > 0)
+cat(paste("\n\nThe number of negative assocations was: \n"))
+sum(tout$oe_beta < 0)
+
+cat(paste("\n\nThe break down by trait type was was: \n"))
+table(tout$trait_type3)
+
+```
+
+
+## Observational associations
+
+### Diversity
+
+```{r}
+tout |> filter(trait_type3 == "Div") |> select(c("MR_outcome","oe_n","oe_beta","oe_se", "oe_P")) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+### Enterotype
+
+```{r}
+tout |> filter(trait_type3 == "Entero") |> select(c("MR_outcome","oe_n","oe_beta","oe_se", "oe_P")) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+### AB Genera
+
+```{r}
+tout |> filter(trait_type3 == "AB" & substr(MR_outcome, 1,1) == "G") |> 
+  filter(!grepl("unclass", MR_outcome)) |> 
+  arrange(Phylum, MR_outcome) |>
+  select(c("MR_outcome","oe_n","oe_beta","oe_se", "oe_P", "Phylum")) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+### RA MTs
+
+```{r}
+tout |> filter(trait_type3 == "RA") |> 
+  arrange(phylum1, phylum2, MR_outcome) |>
+  select(c("MR_outcome","oe_n","oe_beta","oe_se", "oe_P", "phylum1","phylum2","phylum_ratio")) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+## RA MTs involving Firmicutes and Bacteroidetes
+
+```{r}
+tout |> filter(trait_type3 == "RA") |> 
+  filter( (phylum1 == "Bacteroidetes" & phylum2 == "Firmicutes") | (phylum2 == "Bacteroidetes" & phylum1 == "Firmicutes")) |>
+  # filter(!grepl("unclass", MR_outcome)) |>
+  # arrange(phylum1, phylum2, MR_outcome) |>
+  arrange(phylum1, phylum2,oe_beta) |>
+  select(c("MR_outcome","oe_n","oe_beta","oe_se", "oe_P", "taxa1","taxa2", "phylum1","phylum2","phylum_ratio")) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+## RA MTs observational associated with BMI that does NOT include an unclassified AB MT.
+
+```{r}
+tout |> filter(trait_type3 == "RA") |> 
+  # filter( (phylum1 == "Bacteroidetes" & phylum2 == "Firmicutes") | (phylum2 == "Bacteroidetes" & phylum1 == "Firmicutes")) |>
+  filter(!grepl("unclass", MR_outcome)) |>
+  arrange(phylum1, phylum2, MR_outcome) |>
+  select(c("MR_outcome","oe_n","oe_beta","oe_se", "oe_P", "taxa1","taxa2", "phylum1","phylum2","phylum_ratio")) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+
+## BMI MTs causally associated with BMI
+
+```{r}
+##
+tout = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & MR_P < 0.05/33) %>% 
+  dplyr::select(MR_outcome, trait_type3, MR_n, MR_beta, MR_se, MR_P) %>% 
+  arrange(trait_type3, MR_P)
+## add taxonomy info
+m = match( rownames(tout), taxonomy$trait_name)
+rownames(tout)  = taxonomy$new_trait_name[m]
+tout = cbind(tout, taxonomy[m, 5:ncol(taxonomy)])
+##
+nrow(tout)
+```
+
+## Causal MR associations
+
+```{r}
+tout %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+```{r}
+tout |> filter(trait_type3 == "RA" & !grepl("unclassified", taxa1) & !grepl("unclassified", taxa2)  ) |>
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+## BMI categories
+
+```{r}
+mydata$bmi_cat = "underweight"
+w = which(mydata$BMI>18 & mydata$BMI<=25); mydata$bmi_cat[w] = "healthy"
+w = which(mydata$BMI>25 & mydata$BMI<=30); mydata$bmi_cat[w] = "overweight"
+w = which(mydata$BMI>30 ); mydata$bmi_cat[w] = "obesity"
+mydata$bmi_cat = factor(mydata$bmi_cat, levels = c("underweight","healthy","overweight","obesity"))
+
+# fit = lm( BMI ~ age + sex + pruit_BMI_wGRS_info_hwe_filtered , data = mydata)
+fit = lm( BMI ~  pulit_bmi , data = mydata)
+x = fitted(fit)
+m = match(rownames(mydata), names(x))
+mydata$predictedBMI = x[m]
+
+k = 4
+q = quantile( mydata$predictedBMI, probs = seq(0, 1, 1/k), na.rm = TRUE )
+strata = as.factor( cut(mydata$predictedBMI, 4, include.lowest=TRUE, labels=FALSE) )
+mydata$predictedBMI_cat = strata
+```
+
+## A linear assocation of BMI on P_Firmicutes_1_AB/P_Bacteroidetes_1_AB 
+
+```{r}
+temp = mydata[, c("BMI","sex","age","pulit_bmi","P_Firmicutes_1_AB","P_Bacteroidetes_1_AB")]
+temp = temp |> mutate(FB = P_Firmicutes_1_AB/P_Bacteroidetes_1_AB)
+
+FB_test = ivtoolsfit( wdata = temp,
+                  outcome = "P_Bacteroidetes_1_AB",
+                  exposure = "BMI",
+                  instrument = "pulit_bmi",
+                  covariates = c( "sex","age"),
+                  outcome_model_family = "gaussian",
+                  exposure_model_family = "gaussian",
+                  weights = NA,
+                  rnt_outcome = TRUE)
+
+FB_test[c(1,2,4,12:15)]
+```
+
+## Bar plot of Firmicutes and Bacteroidetes mean abundance by BMI category
+
+```{r}
+
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Firmicutes = mean(P_Firmicutes_1_AB),
+            Bacteroidetes = mean(P_Bacteroidetes_1_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Firmicutes","Bacteroidetes"), values_to = "mean_ab", names_to = "phylum", )
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = phylum)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Set1")
+```
+
+
+
+## A linear assocation of BMI on G_Alistipes_0.983_AB/G_Roseburia_0.988_AB 
+
+
+```{r}
+temp = mydata[, c("BMI","sex","age","pulit_bmi","G_Alistipes_0.983_AB","G_Roseburia_0.988_AB")]
+temp = temp |> mutate(AR = (G_Alistipes_0.983_AB+1)/(G_Roseburia_0.988_AB+1),
+                      RA = (G_Roseburia_0.988_AB+1)/(G_Alistipes_0.983_AB+1) )
+
+FB_test = ivtoolsfit( wdata = temp,
+                  outcome = "RA",
+                  exposure = "BMI",
+                  instrument = "pulit_bmi",
+                  covariates = c( "sex","age"),
+                  outcome_model_family = "gaussian",
+                  exposure_model_family = "gaussian",
+                  weights = NA,
+                  rnt_outcome = TRUE)
+
+FB_test[c(1,2,4,12:15)]
+```
+
+
+
+
+
+```{r, fig.width = 15, fig.height = 8}
+FB = mydata |> 
+  filter(!is.na(bmi_cat)) |>
+  group_by(bmi_cat) |>
+  summarize(G_unc_Firmicutes = mean(G_unclassified_P_Firmicutes_0.856_AB),
+            G_Sporobacter = mean(G_Sporobacter_0.879_AB),
+            G_Barnesiella = mean(G_Barnesiella_0.865_AB),
+            G_unc_Clostridiales = mean(G_unclassified_O_Clostridiales_0.955_AB),
+            G_unc_Bacteria = mean(G_unclassified_K_Bacteria_0.798_AB),
+            F_Porphyromonadaceae = mean(F_Porphyromonadaceae_0.994_AB))
+
+FB_long = FB |> pivot_longer(cols = c("F_Porphyromonadaceae",
+                                      "G_unc_Firmicutes","G_unc_Clostridiales", "G_unc_Bacteria", 
+                                      "G_Sporobacter","G_Barnesiella"), 
+                             values_to = "mean_ab", names_to = "taxa", )
+
+# FB_long$G_unclassified = factor(FB_long$taxa, levels = c("F_Porphyromonadaceae",
+#                                                                    "G_unc_Bacteria","G_unc_Firmicutes","G_unc_Clostridiales", 
+#                                                                    "G_Sporobacter","G_Barnesiella"))
+
+FB_long$taxa = factor(FB_long$taxa, levels = c("G_unc_Firmicutes",
+                                                         "G_Sporobacter",
+                                                         "G_Barnesiella",
+                                                         "G_unc_Clostridiales", 
+                                                         "G_unc_Bacteria",
+                                                         "F_Porphyromonadaceae" ))
+
+
+plot = FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = taxa)) +
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette = "Dark2") +
+  facet_wrap(~taxa, scales = "free") +
+  theme_bw() +
+  labs(x = "BMI Category", y = "Average Relative Abunance") +
+  theme(legend.position="bottom")
+  
+f = paste0(project_results_dir, "figures/MR_associated_barplots.pdf")
+pdf(file = f, width = 15, height = 8)
+plot
+dev.off()
+
+plot
+```
+
+
+
+```{r, fig.width = 12, fig.height = 4}
+FB = mydata |> 
+  filter(!is.na(bmi_cat)) |>
+  group_by(bmi_cat) |>
+  summarize(NumberGenera = mean(Div_NumberGenera),
+            Shannon = mean(Div_Shannon),
+            Choa1 = mean(Div_Chao1),
+            )
+
+FB[,2:4] = apply(FB[, 2:4], 2, function(x){x / max(x)})
+
+FB_long = FB |> pivot_longer(cols = c("NumberGenera","Shannon", "Choa1"), values_to = "mean_ab", names_to = "taxa", )
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = taxa)) +
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette = "Set1") +
+  facet_wrap(~taxa, scales = "free") +
+  theme_bw() +
+  theme(legend.position="bottom")
+  
+  
+```
+
+## Is a nonlinear model for BMI a better fit to the data?
+```{r}
+# fit0 = mgcv::gam(Div_Chao1 ~ sex + age + BMI, data = mydata)
+# fit = mgcv::gam(Div_Chao1 ~ sex + age + s(BMI, bs = "tp"), data = mydata)
+fit0 = mgcv::gam(Div_NumberGenera ~ sex + age + BMI, data = mydata)
+fit = mgcv::gam(Div_NumberGenera ~ sex + age + s(BMI, bs = "tp"), data = mydata)
+anova(fit0, fit, test = "LRT")
+
+mydata |> ggplot(aes(x = BMI, y = Div_Chao1)) +
+  geom_smooth(method = "gam", formula = y~s(x, bs = "tp")) +
+  theme_bw()
+```
+
+
+```{r}
+fit0 = mgcv::gam( moosefun::rntransform(G_unclassified_O_Clostridiales_0.955_AB) ~ sex + age + BMI, data = mydata)
+fit = mgcv::gam(moosefun::rntransform(G_unclassified_O_Clostridiales_0.955_AB) ~ sex + age + s(BMI, bs = "tp"), data = mydata)
+anova(fit0, fit, test = "LRT")
+
+mydata |> ggplot(aes(x = BMI, y = moosefun::rntransform(G_unclassified_O_Clostridiales_0.955_AB))) +
+  geom_smooth(method = "gam", formula = y~s(x, bs = "tp")) +
+  labs(y = "G_unclassified_O_Clostridiales") +
+  theme_bw()
+
+```
+
+## Bar plot of Alistipes and Roseburia
+
+```{r, fig.width = 6, fig.height = 3}
+
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Alistipes = mean(G_Alistipes_0.983_AB),
+            Roseburia = mean(G_Roseburia_0.988_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Alistipes","Roseburia"), values_to = "mean_ab", names_to = "genus", )
+FB_long$genus = factor(FB_long$genus, levels = c("Roseburia", "Alistipes"))
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = genus)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw()
+```
+
+
+
+## Bar plot of Sporobacter and Barn
+
+```{r, fig.width = 6, fig.height = 3}
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Sporobacter = mean(G_Sporobacter_0.879_AB),
+            Barnesiella = mean(G_Barnesiella_0.865_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Sporobacter","Barnesiella"), values_to = "mean_ab", names_to = "genus", )
+FB_long$genus = factor(FB_long$genus, levels = c("Barnesiella", "Sporobacter"))
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = genus)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw()
+```
+
+
+```{r, fig.width = 12, fig.height = 5}
+pcol = RColorBrewer::brewer.pal(8, "Set1")
+
+Sp_BP = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Sporobacter = mean(G_Sporobacter_0.879_AB))
+
+p1 = Sp_BP |> ggplot(aes(x = bmi_cat, y = Sporobacter)) +
+  geom_bar(position="stack", stat="identity", fill = pcol[1] ) 
+
+Ba_BP = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Barnesiella = mean(G_Barnesiella_0.865_AB))
+
+p2 = Ba_BP |> ggplot(aes(x = bmi_cat, y = Barnesiella)) +
+  geom_bar(position="stack", stat="identity", fill = pcol[2] ) 
+
+library(patchwork)
+p1|p2
+  
+```
+
+
+## Bar plot of Roseburia and unclssified Clostridiales mean abundance by BMI category
+
+```{r, fig.width = 6, fig.height = 5}
+pcol = RColorBrewer::brewer.pal(8, "Blues")
+
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Roseburia = mean(G_Roseburia_0.988_AB),
+            unc_O_Clostridia = mean(G_unclassified_O_Clostridiales_0.956_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Roseburia","unc_O_Clostridia"), values_to = "mean_ab", names_to = "genus", )
+FB_long$genus = factor(FB_long$genus, levels = c("unc_O_Clostridia", "Roseburia"))
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = genus)) +
+  geom_bar(position="stack", stat="identity") +
+  #scale_fill_brewer(palette = "Set1")
+  scale_fill_manual(values = pcol[c(4,7)])
+```
+
+
+
+## Bar plot of Roseburia and unclssified F_Ruminococcaceae mean abundance by BMI category
+
+```{r, fig.width = 6, fig.height = 5}
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Roseburia = mean(G_Roseburia_0.988_AB),
+            unc_F_Ruminococcaceae = mean(G_unclassified_F_Ruminococcaceae_0.996_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Roseburia","unc_F_Ruminococcaceae"), values_to = "mean_ab", names_to = "genus", )
+FB_long$genus = factor(FB_long$genus, levels = c("unc_F_Ruminococcaceae", "Roseburia"))
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = genus)) +
+  geom_bar(position="stack", stat="identity") +
+  # scale_fill_brewer(palette = "Set1")
+  scale_fill_manual(values = pcol[c(5,7)])
+```
+
+
+## Bar plot of Roseburia and Alistipes mean abundance by BMI category
+
+```{r, fig.width = 6, fig.height = 5}
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Roseburia = mean(G_Roseburia_0.988_AB),
+            Alistipes = mean(G_Alistipes_0.983_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Roseburia","Alistipes"), values_to = "mean_ab", names_to = "genus", )
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = genus)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Set1")
+```
+
+
+
+## Bar plot of Clostrdia taxa
+
+```{r, fig.width = 8, fig.height = 5}
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Roseburia = mean(G_Roseburia_0.988_AB),
+            unc_F_Ruminococcaceae = mean(G_unclassified_F_Ruminococcaceae_0.996_AB),
+            unc_O_Clostridia = mean(G_unclassified_O_Clostridiales_0.956_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Roseburia","unc_O_Clostridia", "unc_F_Ruminococcaceae"), values_to = "mean_ab", names_to = "genus", )
+FB_long$genus = factor(FB_long$genus, levels = c("unc_O_Clostridia", "unc_F_Ruminococcaceae", "Roseburia"))
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = genus)) +
+  geom_bar(position="stack", stat="identity") +
+  # scale_fill_brewer(palette = "Set1")
+  scale_fill_manual(values = pcol[c(4,6,7)])
+```
+
+```{r}
+a = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33) %>% 
+  arrange(oe_P)
+
+w = grep("Roseburia", rownames(tout) )
+
+# f = paste0(project_results_dir, "tables/Roseburia.txt")
+# write.table(a[w,], file = f, row.names  = TRUE, col.names = TRUE, sep = "\t", quote = FALSE)
+
+a[w,] %>% knitr::kable() %>% kableExtra::kable_classic()
+
+```
+
+
+I could make a network of the traits involved here.
+
+```{r}
+n = rownames(a[w, ])
+b = gsub("G_Roseburia_","", n)
+d = gsub("_G_Roseburia","", b)
+d = d[c(1:7, 9:10)]
+d = c("G_Roseburia", d)
+d = gsub("_RA", "", d)
+
+network_mts = unlist( sapply(d, function(x){ grep(x, rownames(tout))}) )
+network_mts = unique( rownames(tout)[network_mts]) 
+```
+
+
+```{r}
+tout %>% filter(oe_beta > 0) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+```{r}
+# tout %>% filter(oe_beta < 0 & trait_type == "AB") %>% knitr::kable() %>% kableExtra::kable_classic()
+tout %>% filter(oe_beta < 0 ) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+```{r}
+# tout %>% filter(oe_beta < 0 & trait_type == "AB") %>% knitr::kable() %>% kableExtra::kable_classic()
+tout %>% filter(trait_type  == "Div") %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+```{r}
+# tout %>% filter(oe_beta < 0 & trait_type == "AB") %>% knitr::kable() %>% kableExtra::kable_classic()
+tout %>% filter(trait_type3  == "Entero") %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## How many observational Associations by type and direction
+
+```{r}
+tout = tout %>% mutate(direction = ifelse(oe_beta < 0 , "negative", "positive") )
+cat(paste0("Trait Type Count\n"))
+table(tout$trait_type3)
+cat(paste0("\nDirection Count\n"))
+table(tout$direction)
+cat(paste0("\nBoth\n"))
+table(tout$trait_type3, tout$direction)
+```
+
+
+# Volcano Plot
+
+```{r}
+## Add a column to declare significance
+Derived_Estimates$BMI = Derived_Estimates$BMI %>% mutate(sig = ifelse(oe_P < 0.05/33, "sig", "not sig" ) )
+
+
+```
+
+
+```{r, fig.width = 8, fig.height = 8}
+temp = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits)
+
+temp$MR_outcome = gsub("_RA","", temp$MR_outcome)
+temp$MR_outcome = gsub("\\|"," | ", temp$MR_outcome)
+
+#temp$trait_type = factor(temp$trait_type, levels = c("AB","PA","RA","Entero","Div") )
+#temp$trait_type2 = temp$trait_type
+#w = which(temp$trait_type2 %in% c("Div", "RA") ); temp$trait_type2[w] = "AB"
+#w = which(temp$trait_type2 %in% c("Entero") ); temp$trait_type2[w] = "PA"
+
+Obs_Volcano = temp %>% 
+  ggplot(aes(y = -log10(oe_P), x = oe_beta )) +
+  geom_point(aes(color = trait_type2, shape = sig), size = 4, alpha = 0.8) +
+  geom_hline(yintercept = -log10(0.05/33), linetype = "dashed", color = "grey50", linewidth = 1.5) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = c(1, 19)) +
+  theme_bw() + 
+  theme(legend.position="bottom") +
+  labs(x = "effect estimate", y = "-log10 P-value", color = "MT type", shape = "significance") + 
+  ggrepel::geom_text_repel( data = temp %>% filter( -log10(oe_P) > 4.5  & trait_type2 == "AB") , 
+                  aes(label = MR_outcome), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.5, 
+                  nudge_x = 0.015, size = 2) +
+  ggrepel::geom_text_repel( data = temp %>% filter( -log10(oe_P) > 5  & trait_type2 == "PA") , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0,
+                  box.padding = 0.2, 
+                  nudge_y = -0.01, size = 2) +
+   ggrepel::geom_text_repel( data = temp %>% filter( -log10(oe_P) > 10  & trait_type2 == "RA") ,
+                  aes(label = MR_outcome),
+                  min.segment.length = 0.01,
+                  box.padding = 0.1,
+                  nudge_x = -0.015, size = 2) 
+  # ggrepel::geom_text_repel( data = temp %>% filter( -log10(oe_P) > -log10(0.05/36)  & trait_type == "Entero") , 
+  #                 aes(label = MR_outcome), 
+  #                 min.segment.length = 0.01,
+  #                 box.padding = 0.5, 
+  #                 nudge_x = -0.015, size = 3) +
+  # ggrepel::geom_text_repel( data = temp %>% filter( -log10(oe_P) > -log10(0.05/36)  & trait_type == "Div") , 
+  #                 aes(label = MR_outcome), 
+  #                 min.segment.length = 0.01,
+  #                 box.padding = 0.5, 
+  #                 nudge_x = -0.005, size = 3)
+  
+  # annotate("text", x = 0.055, y = -0.1, label = paste0("Pearson's r = ", PR))
+
+Obs_Volcano
+```
+
+```{r}
+f = paste0(project_results_dir, "figures/obs_volcano_20240920.pdf")
+pdf(f, width = 8, height = 6)
+Obs_Volcano
+dev.off()
+
+```
+
+## Aggregated observational association count
+
+```{r}
+aout = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33) %>% 
+  arrange(oe_P) %>% 
+  dplyr::select( trait_type, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq)
+
+nrow(aout)
+```
+
+
+## Female observational association count
+
+```{r}
+fout = Derived_Estimates$BMI_females %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33) %>% 
+  arrange(oe_P) %>% 
+  dplyr::select( trait_type, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq)
+  
+nrow(fout) 
+
+```
+
+## male observational association count
+
+```{r}
+mout = Derived_Estimates$BMI_males %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33) %>% 
+  arrange(oe_P) %>% 
+  dplyr::select( trait_type, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq)
+  
+nrow(mout)
+```
+
+
+```{r}
+cat(paste0("Overalap with sex aggregated analysis\n"))
+sum( rownames(fout) %in% rownames(aout) )
+sum( rownames(mout) %in% rownames(aout) )
+cat(paste0("Overalap between the sex specific analysis\n"))
+sum( rownames(fout) %in% rownames(mout) )
+sum( rownames(mout) %in% rownames(fout) )
+```
+```{r}
+shared = rownames(fout)[ which( rownames(fout) %in% rownames(mout) )]
+sum( shared %in% rownames(aout) )
+```
+
+
+
+```{r}
+w = which(rownames(fout) %in% rownames(mout))
+fout[w, ] %>% filter(trait_type  != "RA") %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+```{r}
+w = which(!rownames(fout) %in% rownames(mout))
+fout[w, ] %>% filter(trait_type  != "RA") %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+## Comparing male and female observational estimates
+
+```{r}
+temp = data.frame( outcome = Derived_Estimates$BMI_females$MR_outcome,
+                   female = Derived_Estimates$BMI_females$oe_beta,
+                   female_se = Derived_Estimates$BMI_females$oe_se,
+                   female_P = Derived_Estimates$BMI_females$oe_P,
+                   male = Derived_Estimates$BMI_males$oe_beta,
+                   male_se = Derived_Estimates$BMI_males$oe_se,
+                   male_P = Derived_Estimates$BMI_males$oe_P, 
+                   all = Derived_Estimates$BMI$oe_beta,
+                   all_se = Derived_Estimates$BMI$oe_se,
+                   all_P = Derived_Estimates$BMI$oe_P,
+                   trait_type = Derived_Estimates$BMI_females$trait_type,
+                   trait_type2 = Derived_Estimates$BMI_females$trait_type2,
+                   trait_type3 = Derived_Estimates$BMI_females$trait_type3)
+
+##
+temp$all_sig = ifelse(temp$all_P < 0.05/33, "Yes", "No")
+
+temp = temp |> filter(outcome %in% primary_traits)
+
+## Broad Correlation
+cor.test(temp$female, temp$male)
+###
+PearsonR = cor.test(temp$female, temp$male)$estimate
+PearsonR = formatC(PearsonR, digits = 3)
+###
+w = which(temp$trait_type2 == "AB")
+PearsonR_AB = cor.test(temp$female[w], temp$male[w])$estimate
+PearsonR_AB = formatC(PearsonR_AB, digits = 3)
+##
+w = which(temp$trait_type2 == "PA")
+PearsonR_PA = cor.test(temp$female[w], temp$male[w])$estimate
+PearsonR_PA = formatC(PearsonR_PA, digits = 3)
+##
+w = which(temp$trait_type2 == "RA")
+PearsonR_RA = cor.test(temp$female[w], temp$male[w])$estimate
+PearsonR_RA = formatC(PearsonR_RA, digits = 3)
+
+
+#### difference between point estimates
+z = t( sapply(1:nrow(temp), function(i){
+  ztest(beta1 = temp[i,2], se1 = temp[i,3] , beta2 = temp[i,5] , se2 = temp[i,6] )  
+}) )
+temp$ztest_P = z[,2]
+w = which( z[,2]< 0.05 )
+q = which( z[,2]< 0.05/33 )
+temp$sig_dif = "P>0.05"
+temp$sig_dif[w] = "P<0.05"
+temp$sig_dif[q] = "P<0.05/33"
+temp$sig_dif = factor(temp$sig_dif, levels = c("P<0.05/33", "P<0.05" ,"P>0.05" ) )
+temp$sig_dif = as.factor(temp$sig_dif)
+
+```
+
+```{r}
+## AB Pearson's correlation
+w = which(temp$trait_type2 == "AB")
+x = cor.test(temp$male[w], temp$female[w])
+ab_Pearson_r = c(x$estimate, x$p.value)
+ab_Pearson_r = paste0("Pearson's r = ", round(ab_Pearson_r[1],2), "\np = ", formatC(ab_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$male[w] ~ temp$female[w])
+AB_slope = summary(fit)$coef[2,1]
+
+## PA Pearson's correlation
+w = which(temp$trait_type2 == "PA")
+x = cor.test(temp$male[w], temp$female[w])
+pa_Pearson_r = c(x$estimate, x$p.value)
+pa_Pearson_r = paste0("Pearson's r = ", round(pa_Pearson_r[1],2), "\np = ", formatC(pa_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$male[w] ~ temp$female[w])
+PA_slope = summary(fit)$coef[2,1]
+
+
+## RA Pearson's correlation
+w = which(temp$trait_type2 == "RA")
+x = cor.test(temp$male[w], temp$female[w])
+ra_Pearson_r = c(x$estimate, x$p.value)
+ra_Pearson_r = paste0("Pearson's r = ", round(ra_Pearson_r[1],2), "\np = ", formatC(ra_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$male[w] ~ temp$female[w])
+RA_slope = summary(fit)$coef[2,1]
+
+
+## ANNOTATION TEXT
+ann_text = data.frame(label = c(ab_Pearson_r, ra_Pearson_r, pa_Pearson_r ),
+                      trait_type2 = c("AB","RA","PA"), 
+                      x = c(-0.03, -0.03, -0.05 ), 
+                      y = c(0.03, 0.04, 0.05) )
+```
+
+
+
+## Define a variable to provide a significance class
+
+```{r}
+temp$sig_class = "null"
+## FEMALES
+w = which(temp$female_P < 0.05/33 )
+temp$sig_class[w] = "females"
+## MALES
+w = which( temp$male_P < 0.05/33)
+temp$sig_class[w] = "males"
+## BOTH
+w = which(temp$female_P < 0.05/33 & temp$male_P < 0.05/33)
+temp$sig_class[w] = "both"
+
+### Set factor levels
+temp$sig_class = factor(temp$sig_class, levels = c("null",
+                                                   "both", "females", "males" ))
+
+# ## BOTH But with different estimates
+# w = which(temp$female_P < 0.05/36 & temp$male_P < 0.05/36 & temp$ztest_P < 0.05)
+# temp$sig_class[w] = "both w/dif.est."
+# ## FEMALES ONLY with different in estimates
+# w = which(temp$female_P < 0.05/36 & temp$male_P > 0.05/36 & temp$ztest_P < 0.05)
+# temp$sig_class[w] = "females w/dif.est."
+# ## MALES ONLY with different in estimates
+# w = which(temp$female_P > 0.05/36 & temp$male_P < 0.05/36 & temp$ztest_P < 0.05)
+# temp$sig_class[w] = "males w/dif.est."
+# ### Set as factor
+# temp$sig_class = as.factor(temp$sig_class)
+# ### Set factor levels
+# temp$sig_class = factor(temp$sig_class, levels = c("null",
+#                                                    "both", "both w/dif.est.",
+#                                                    "females","females w/dif.est.",
+#                                                    "males","males w/dif.est."))
+# 
+
+
+table(temp$sig_class)
+
+```
+
+## edit outcome names
+
+```{r}
+m = match(temp$outcome, taxonomy$trait_name2)
+temp$new_outcome = taxonomy$trait_taxa[m]
+temp$new_outcome = gsub("\\|"," | ",temp$new_outcome)
+```
+
+
+```{r}
+
+neg = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33 & trait_type2 == "RA" & oe_beta < 0) %>% arrange(oe_beta) |> pull(MR_outcome)
+pos = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits & oe_P < 0.05/33 & trait_type2 == "RA" & oe_beta > 0) %>% arrange(oe_beta) |> pull(MR_outcome)
+
+## Shared signals
+a = (temp |> arrange(all_P) |> filter(sig_class == "both" & trait_type3 == "RA" & female < 0) |> pull(new_outcome))[1:2]
+b = (temp |> arrange(all_P) |> filter(sig_class == "both" & trait_type3 == "RA" & female > 0) |> pull(new_outcome))[1:2]
+
+d = (temp |> arrange(all_P) |> filter(sig_class == "females" & trait_type3 == "RA" & female < 0) |> pull(new_outcome))[1:2]
+e = (temp |> arrange(all_P) |> filter(sig_class == "females" & trait_type3 == "RA" & female > 0) |> pull(new_outcome))[1:2]
+
+f = (temp |> arrange(all_P) |> filter(sig_class == "males" & trait_type3 == "RA" & female < 0) |> pull(new_outcome))[1:2]
+g = (temp |> arrange(all_P) |> filter(sig_class == "males" & trait_type3 == "RA" & female > 0) |> pull(new_outcome))[1:2]
+####
+h = (temp |> arrange(all_P) |> filter(sig_class == "both" & trait_type3 == "AB" & female < 0) |> pull(new_outcome))[1:3]
+i = (temp |> arrange(all_P) |> filter(sig_class == "both" & trait_type3 == "AB" & female > 0) |> pull(new_outcome))[1:3]
+
+j = (temp |> arrange(all_P) |> filter(sig_class == "females" & trait_type3 == "AB" & female < 0) |> pull(new_outcome))[1:2]
+k = (temp |> arrange(all_P) |> filter(sig_class == "females" & trait_type3 == "AB" & female > 0) |> pull(new_outcome))[1:2]
+
+l = (temp |> arrange(all_P) |> filter(sig_class == "males" & trait_type3 == "AB" & female < 0) |> pull(new_outcome))[1:2]
+m = (temp |> arrange(all_P) |> filter(sig_class == "males" & trait_type3 == "AB" & female > 0) |> pull(new_outcome))[1:2]
+
+####
+n = (temp |> arrange(all_P) |> filter(sig_class == "both" & trait_type3 == "PA" & female < 0) |> pull(new_outcome))[1:3]
+o = (temp |> arrange(all_P) |> filter(sig_class == "both" & trait_type3 == "PA" & female > 0) |> pull(new_outcome))[1:3]
+
+p = (temp |> arrange(all_P) |> filter(sig_class == "females" & trait_type3 == "PA" & female < 0) |> pull(new_outcome))[1:2]
+q = (temp |> arrange(all_P) |> filter(sig_class == "females" & trait_type3 == "PA" & female > 0) |> pull(new_outcome))[1:2]
+
+r = (temp |> arrange(all_P) |> filter(sig_class == "males" & trait_type3 == "PA" & female < 0) |> pull(new_outcome))[1:2]
+s = (temp |> arrange(all_P) |> filter(sig_class == "males" & trait_type3 == "PA" & female > 0) |> pull(new_outcome))[1:2]
+
+
+
+t = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+
+
+highlight_taxa = na.omit( unique(c(a,b,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t)) )
+```
+
+
+
+```{r, fig.width = 17, fig.height = 7}
+pcol = RColorBrewer::brewer.pal( length(unique((temp$sig_class))), "Set1")
+pcol = c("grey", pcol[-6])
+###
+Obs_Male_Female_scatter = temp |> ggplot(aes(x = female, y = male)) +
+  geom_smooth( method = "lm", formula = y ~ x , color = "blue", size = 1.5) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point( aes(shape = all_sig, color = sig_class ), size = 4, alpha = 1) +
+  # scale_color_continuous(type = "viridis") +
+  # scale_color_brewer(palette = "Set1") +
+  scale_color_manual(values = pcol) +
+  ggrepel::geom_text_repel( data = temp |> filter(new_outcome %in% highlight_taxa ), 
+                  aes( label = new_outcome ), 
+                  min.segment.length = 0.1,
+                  box.padding = 0.1, 
+                  nudge_x = -0.001, 
+                  nudge_y = 0,
+                  size = 3) +
+  # ggrepel::geom_text_repel( data = temp |> filter(outcome %in% highlight_taxa & male > 0  & male > female ), 
+  #                 aes( label = outcome ), 
+  #                 min.segment.length = 0.1,
+  #                 box.padding = 0.1, 
+  #                 nudge_x = -0.001, 
+  #                 nudge_y = 0,
+  #                 size = 3) +
+  #  ggrepel::geom_text_repel( data = temp %>% filter(outcome %in% highlight_taxa & male > 0  & male < female ), 
+  #                 aes( label = outcome ), 
+  #                 min.segment.length = 0.1,
+  #                 box.padding = 0.1, 
+  #                 nudge_x = 0, 
+  #                 nudge_y = -0.0015,
+  #                 size = 3) +
+  #  ggrepel::geom_text_repel( data = temp %>% filter(outcome %in% highlight_taxa & male < 0  & male > female ), 
+  #                 aes( label = outcome ), 
+  #                 min.segment.length = 0.1,
+  #                 box.padding = 0.1, 
+  #                 nudge_x = 0, 
+  #                 nudge_y = 0.001,
+  #                 size = 3) +
+  # ggrepel::geom_text_repel( data = temp %>% filter(outcome %in% highlight_taxa & male < 0  & male < female & trait_type2 != "RA" ), 
+  #                 aes( label = outcome ), 
+  #                 min.segment.length = 0.1,
+  #                 box.padding = 0.1, 
+  #                 nudge_x = 0.007, 
+  #                 nudge_y = -0.005,
+  #                 size = 3) +
+  # ggrepel::geom_text_repel( data = temp %>% filter(outcome %in% highlight_taxa & male < 0  & male < female & trait_type2 == "RA" ), 
+  #                 aes( label = outcome ), 
+  #                 min.segment.length = 0.1,
+  #                 box.padding = 0.1, 
+  #                 nudge_x = 0.0025, 
+  #                 nudge_y = 0.005,
+  #                 size = 3) +
+  labs(color = "Association Class", shape = "GenPop Association", x = "observational effect estimates for females", 
+       y = "observational effect estimates for males" ) +
+  facet_wrap(. ~ trait_type2, scales = "free", ncol = 1 ) +
+  geom_text( data = ann_text,
+             mapping = aes(x = x, y = y, label = label) ) +
+  theme_bw() +
+  theme(legend.position="bottom") 
+  
+```
+
+
+```{r, fig.width = 10, fig.height = 15}
+Obs_Male_Female_scatter
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/obs_betas_4_males_females_20240920.pdf")
+pdf(f, width = 10, height = 12)
+Obs_Male_Female_scatter
+dev.off()
+
+```
+
+
+
+```{r, fig.width = 15, fig.height = 10}
+library(patchwork)
+
+fig1 = Obs_Volcano + Obs_Male_Female_scatter +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(widths = c(1, 1.25) )
+
+fig1
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/Fig1_AandB_ObsAssoc_20240920.pdf")
+pdf(f, width = 15, height = 12)
+fig1
+dev.off()
+
+```
+
+
+```{r}
+temp$sig_class2 = as.character( temp$sig_class )
+w = grep("females", temp$sig_class2); temp$sig_class2[w] = "fe"
+w = grep("males", temp$sig_class2); temp$sig_class2[w] = "males"
+w = grep("fe", temp$sig_class2); temp$sig_class2[w] = "females"
+w = grep("both", temp$sig_class2); temp$sig_class2[w] = "both"
+temp$sig_class2 = factor(temp$sig_class2, levels = c("null","both","females","males"))
+
+```
+
+
+
+## Which MTs are assocaited with BMI in both males and females ?
+
+```{r}
+####
+temp %>% filter( female_P < 0.05/33 & male_P < 0.05/33 ) %>% 
+  arrange(trait_type3, female_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+##  female observational associations
+
+```{r}
+temp %>% filter( female_P < 0.05/33 & male_P > 0.05/33 ) %>%
+  arrange(trait_type3, desc(male_P)) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+##  female observational associations where the effect estimates are NOT different from those seen in males
+
+```{r}
+temp %>% filter( female_P < 0.05/33 & male_P > 0.05/33 ) %>%
+  filter( ztest_P > 0.05 ) %>% arrange(trait_type3, female_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Uniquely female observational associations
+
+```{r}
+temp %>% filter( female_P < 0.05/33 & male_P > 0.05/33 ) %>%
+  filter( ztest_P < 0.05 ) %>% arrange(trait_type3, ztest_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## Uniquely female observational associations
+
+```{r}
+temp %>% filter( all_P > 0.05/33 & female_P < 0.05/33 ) %>% 
+  arrange(trait_type3, ztest_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+##  male observational associations
+
+```{r}
+temp %>% filter( female_P > 0.05/33 & male_P < 0.05/33 ) %>%
+  arrange(desc(male_P)) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Uniquely male observational associations
+
+```{r}
+temp %>% filter( female_P > 0.05/33 & male_P < 0.05/33 ) %>%
+  filter( ztest_P < 0.05 ) %>% arrange(trait_type3, ztest_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+```{r}
+temp %>% filter( female_P > 0.05/33 & male_P < 0.05/33 ) %>%
+  filter( ztest_P > 0.05 ) %>% arrange(male_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Uniquely male observational associations
+
+```{r}
+temp %>% filter( all_P > 0.05/33 & male_P < 0.05/33 ) %>%
+  arrange(trait_type3, ztest_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Which MTs are assocaited with BMI in both males and females AND also have different effect estimates?
+
+```{r}
+####
+temp %>% filter( female_P < 0.05/33 & male_P < 0.05/33 & ztest_P < 0.05 ) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## Which MTs are assocaited with BMI in EITHER  males OR females AND also have different effect estimates?
+
+```{r}
+temp %>% filter( female_P <= 0.05/33 | male_P <= 0.05/33 ) %>%
+  filter( ztest_P < 0.05 ) %>% arrange(female_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Comparison of sensitivity results
+
+```{r}
+a = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits)
+b = BMI_sensitivity$BMI %>% filter(MR_outcome %in% primary_traits)
+
+cor.test(a$oe_beta, b$oe_beta)
+cor.test(a$MR_beta, b$MR_beta)
+```
+
+```{r}
+plot(a$oe_beta, b$oe_beta)
+abline(v = 0)
+abline(h = 0)
+```
+
+
+## FORREST PLOT of OBSERVATIONAL RESULTS
+
+## Forest plot for top BMI results
+
+### Set up the data in long format
+
+```{r}
+both_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits) , 
+                                        pop_id = "BMI", alpha = 0.05/33 )
+## remove the tsls data
+w = grep("tsls", both_long$analysis)
+both_long = both_long[-w,]
+
+######### FEMALES ############
+females_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females %>% filter(MR_outcome %in% primary_traits), 
+                                        pop_id = "females", alpha = 0.05/33 )
+## remove the tsls data
+w = grep("tsls", females_long$analysis)
+females_long = females_long[-w,]
+
+
+######### MALES ############
+males_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males %>% filter(MR_outcome %in% primary_traits), 
+                                        pop_id = "males", alpha = 0.05/33 )
+## remove the tsls data
+w = grep("tsls", males_long$analysis)
+males_long = males_long[-w,]
+
+## COMBINE
+obs_long = rbind( both_long, females_long, males_long)
+rm(males_long)
+rm(females_long)
+rm(both_long)
+## Define analysis factor order
+obs_long$analysis = factor(obs_long$analysis, levels = c("obs_BMI", "obs_females", "obs_males")[3:1] )
+# obs_long$outcome = gsub("\\|"," |",obs_long$outcome)
+```
+
+## Male Specific MTs
+
+```{r}
+male_specific = temp %>% 
+  filter( female_P > 0.05/33 & male_P < 0.05/33 ) %>% 
+  filter( ztest_P > 0.05 ) %>% arrange(male_P) %>% dplyr::select(outcome)
+
+uniquely_male = temp %>% 
+  filter( female_P > 0.05/33 & male_P < 0.05/33 ) %>% 
+  filter( ztest_P < 0.05 ) %>% arrange(male_P) %>% dplyr::select(outcome)
+```
+
+## Female Specific MTs
+
+```{r}
+female_specific = temp %>% 
+  filter( female_P < 0.05/33 & male_P > 0.05/33 ) %>% 
+  filter( ztest_P > 0.05 ) %>% arrange(female_P) %>% dplyr::select(outcome)
+
+uniquely_female = temp %>% 
+  filter( female_P < 0.05/33 & male_P > 0.05/33 ) %>% 
+  filter( ztest_P < 0.05 ) %>% arrange(female_P) %>% dplyr::select(outcome)
+```
+
+
+```{r, fig.width = 10, fig.height = 5}
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[8]
+y = RColorBrewer::brewer.pal(9, "Set1")[c(5,3)]
+pcol = c(x,y)
+# pcol = wesanderson::wes_palette("Royal1")[c(1:2,4)]
+## MAKE PLOT
+male_specific_plot = dh_forrest_plot(data = obs_long %>% filter(outcome %in% male_specific$outcome), 
+                           alpha = 0.05/33, 
+                           analysis_type = "obs_males",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol,
+                           label_size = 7)
+
+male_specific_plot
+```
+
+
+```{r, fig.width = 10, fig.height = 5.5}
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[8]
+y = RColorBrewer::brewer.pal(9, "Set1")[c(5,3)]
+pcol = c(x,y)
+# pcol = wesanderson::wes_palette("Royal1")[c(1:2,4)]
+## MAKE PLOT
+male_unique_plot = dh_forrest_plot(data = obs_long %>% filter(outcome %in% uniquely_male$outcome), 
+                           alpha = 0.05/33, 
+                           analysis_type = "obs_males",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol,
+                           label_size = 7)
+
+male_unique_plot
+```
+
+
+```{r , fig.width = 10, fig.height = 12}
+female_specific_plot = dh_forrest_plot(data = obs_long %>% filter(outcome %in% female_specific$outcome), 
+                           alpha = 0.05/33, 
+                           analysis_type = "obs_females",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol,
+                           label_size = 7)
+
+female_specific_plot
+```
+
+```{r , fig.width = 10, fig.height = 4.5}
+female_unique_plot = dh_forrest_plot(data = obs_long %>% filter(outcome %in% uniquely_female$outcome), 
+                           alpha = 0.05/33, 
+                           analysis_type = "obs_females",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol,
+                           label_size = 7)
+
+female_unique_plot
+```
+
+```{r, fig.width = 8, fig.height = 8}
+library(patchwork)
+male_specific_plot / male_unique_plot + 
+  plot_layout(heights = c(1.35, 2)) +
+  plot_annotation(tag_levels = 'A')
+```
+
+```{r, fig.width = 8, fig.height = 8}
+Mplot = ggpubr::ggarrange(male_specific_plot,male_unique_plot,  
+                  nrow = 2, 
+                  common.legend = TRUE, 
+                  legend = "bottom",
+                  heights = c(2.2,3),
+                  labels = c("A","B"))
+```
+
+
+```{r, fig.width = 8, fig.height = 12}
+Fplot = ggpubr::ggarrange(female_specific_plot,female_unique_plot,  
+                  nrow = 2, 
+                  common.legend = TRUE, 
+                  legend = "bottom",
+                  heights = c(5,1),
+                  labels = c("C","D"))
+
+Fplot2 = ggpubr::ggarrange(female_specific_plot,
+                  nrow = 1, 
+                  labels = c("A"),
+                  common.legend = TRUE, 
+                  legend = "bottom")
+
+Fplot3 = ggpubr::ggarrange(female_specific_plot,
+                  nrow = 1, 
+                  labels = c("A"),
+                  common.legend = TRUE, 
+                  legend = "bottom")
+```
+
+
+```{r, fig.width = 8, fig.height = 8}
+Mplot2 = ggpubr::ggarrange(female_unique_plot, male_specific_plot, male_unique_plot,
+                  nrow = 3, 
+                  common.legend = TRUE, 
+                  legend = "bottom",
+                  heights = c(3, 2.5, 2.5),
+                  labels = c("B","C","D"))
+
+Mplot3 = ggpubr::ggarrange(female_unique_plot, male_specific_plot, male_unique_plot,
+                  nrow = 3, 
+                  common.legend = TRUE, 
+                  legend = "bottom",
+                  heights = c(2, 3, 1.8),
+                  labels = c("B","C", "D"))
+```
+
+```{r, fig.width = 16, fig.height = 12}
+plot = ggpubr::ggarrange(Fplot2, Mplot2,
+                  ncol = 2, 
+                  widths = c(1, 1))
+
+f = paste0(project_results_dir, "figures/obs_forrest_plot_20240920.pdf")
+pdf(file = f, width = 18, height = 14)
+plot
+dev.off()
+
+```
+
+```{r, fig.width = 16, fig.height = 12}
+# plot = ggpubr::ggarrange(Mplot2, Fplot2,  
+#                   ncol = 2, 
+#                   widths = c(1, 1.15))
+# 
+# f = paste0(project_results_dir, "figures/obs_forrest_plot_v2.pdf")
+# pdf(file = f, width = 18, height = 12)
+# plot
+# dev.off()
+# 
+# ########################
+# 
+# plot = ggpubr::ggarrange(Fplot3, Mplot3,  
+#                   ncol = 2, 
+#                   widths = c(1.15, 1))
+# 
+# f = paste0(project_results_dir, "figures/obs_forrest_plot_v3.pdf")
+# pdf(file = f, width = 18, height = 12)
+# plot
+# dev.off()
+
+```
+
+```{r, fig.width = 10, fig.height = 7}
+library(ggrepel)
+###
+
+###
+pcol = RColorBrewer::brewer.pal(8, "Set1")
+###
+p = temp %>% ggplot(aes(x = female, y = male)) +
+  geom_smooth( method = "lm", formula = y ~ x , color = "grey", size = 2) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point( aes(shape = as.factor(trait_type), color = -log10(female_P) ), size = 4, alpha = 1) +
+  scale_color_continuous(type = "viridis") +
+  geom_text_repel( data = temp %>% filter(ztest_P < 0.05 & female > male), 
+                  aes(label=outcome), 
+                  min.segment.length = 0,
+                  box.padding = 0.25, 
+                  color = pcol[1], nudge_x = 0.015, nudge_y = -0.015 ) +
+  geom_text_repel( data = temp %>% filter(ztest_P < 0.01 & male > female), 
+                  aes(label=outcome), 
+                  min.segment.length = 0,
+                  box.padding = 0.25, 
+                  color = pcol[1], nudge_x = -0.025, nudge_y = 0.01 ) +
+  # scale_color_brewer(palette="Set1") +
+  
+  labs(color = paste0("estimates diff."), 
+       subtitle = paste0( "Pearson's r = ", PearsonR ) ) +
+  theme_bw()
+
+
+p 
+```
+
+
+
+```{r}
+BMI_gen = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "gen_pop", alpha = 0.05/33 )
+
+BMI_females = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females, 
+                                        pop_id = "females", alpha = 0.05/33 )
+
+BMI_males = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males, 
+                                        pop_id = "males", alpha = 0.05/33 )
+
+## Combine GenPop, males and females Data
+BMI_all = rbind(BMI_gen, BMI_females, BMI_males)
+
+## Fiter include only PRIMARY TAXA and the observational data - i.e. remove the MR resutls
+BMI_all = BMI_all %>% filter(outcome %in% primary_traits & analysis %in% c("obs_males", "obs_females", "obs_gen_pop"))
+
+## Define the levels
+BMI_all$analysis = factor(BMI_all$analysis, levels = c("obs_gen_pop", "obs_females", "obs_males")[3:1] )
+
+## add phylum taxonomy
+m = match(BMI_all$outcome, Derived_Estimates$BMI$MR_outcome )
+BMI_all$phylum = Derived_Estimates$BMI$Phylum[m]
+
+## add in the ratios labels to phylum
+w = which( is.na( BMI_all$phylum ) )
+BMI_all$phylum[w] = "Ratios"
+
+## replace the ratio names with the new trait names
+BMI_all$outcome = gsub("\\|"," | ",BMI_all$outcome)
+BMI_all$outcome = gsub("_RA","",BMI_all$outcome)
+
+
+## Add a phylum ratio label
+BMI_all$ratio_cat = Derived_Estimates$BMI$phylum_ratio[m]
+BMI_all$ratio_cat = gsub("\\|"," | ",BMI_all$ratio_cat)
+```
+
+
+
+```{r, fig.width = 20, fig.height = 25}
+library(ggforestplot)
+
+## Plot Data
+k = BMI_all %>% filter(analysis %in% c("obs_gen_pop") & pval < 0.05/33) %>% dplyr::pull(outcome)
+temp = BMI_all %>% filter(outcome %in% k)
+
+## 
+pcol = RColorBrewer::brewer.pal(3, "Set1")[3:1]
+
+w = which(temp$phylum == "Ratios")
+
+##
+plot1 = ggforestplot::forestplot(
+  df = temp[-w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "microbiome traits",
+  xlab = "1 rank normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+plot2 = ggforestplot::forestplot(
+  df = temp[w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "microbiome traits",
+  xlab = "1 rank normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~ratio_cat,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+
+plot1 | plot2 + plot_annotation(tag_levels = 'A')
+
+```
+
+
+```{r, fig.width = 14, fig.height = 14}
+f = paste0(project_results_dir, "figures/observational_forest_GenPop_20240920.pdf")
+pdf(f, width = 20, height = 20)
+plot1 | plot2 + plot_annotation(tag_levels = 'A') 
+dev.off()
+```
+
+
+
+
+```{r, fig.width = 12, fig.height = 13}
+library(ggforestplot)
+
+## Plot Data
+a = BMI_all$outcome[which(BMI_all$analysis == "obs_gen_pop" & BMI_all$pval < 0.05/33)]
+b = BMI_all$outcome[which(BMI_all$analysis == "obs_females" & BMI_all$pval < 0.05/33)]
+d = BMI_all$outcome[which(BMI_all$analysis == "obs_males" & BMI_all$pval < 0.05/33)]
+female_specific = b[!b %in% a]
+male_specific = d[!d %in% a]
+
+Ftemp = BMI_all %>% filter(outcome %in% female_specific)
+Mtemp = BMI_all %>% filter(outcome %in% male_specific)
+z = which( !is.na(Mtemp$ratio_cat) )
+Mtemp$phylum[z] = Mtemp$ratio_cat[z]
+
+##
+plot1 = ggforestplot::forestplot(
+  df = Ftemp ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "microbiome traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+plot2 = ggforestplot::forestplot(
+  df = Mtemp,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "microbiome traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+
+plot1 / plot2 + plot_annotation(tag_levels = 'A') + plot_layout( heights = c(1, 1.3) ) 
+
+```
+
+
+
+```{r, fig.width = 14, fig.height = 14}
+f = paste0(project_results_dir, "figures/observational_forest_male_females_20240920.pdf")
+pdf(f, width = 8, height = 9)
+plot1 / plot2 + plot_annotation(tag_levels = 'A') + plot_layout( heights = c(1.25, 1) ) 
+dev.off()
+```
+
+## repeating the larger observational plot but also placing the male and females specific observations into it
+
+
+
+```{r, fig.width = 20, fig.height = 25}
+library(ggforestplot)
+
+## Plot Data
+k = BMI_all %>% filter(analysis %in% c("obs_gen_pop") & pval < 0.05/33) %>% dplyr::pull(outcome)
+k = unique( c(k, female_specific, male_specific) )
+temp = BMI_all %>% filter(outcome %in% k)
+
+## 
+pcol = RColorBrewer::brewer.pal(3, "Set1")[3:1]
+
+w = which(temp$phylum == "Ratios")
+
+##
+plot1 = ggforestplot::forestplot(
+  df = temp[-w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "microbiome traits",
+  xlab = "1 rank normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+plot2 = ggforestplot::forestplot(
+  df = temp[w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "microbiome traits",
+  xlab = "1 rank normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~ratio_cat,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+
+plot1 | plot2 + plot_annotation(tag_levels = 'A')
+
+```
+
+
+```{r, fig.width = 14, fig.height = 14}
+f = paste0(project_results_dir, "figures/observational_forest_GenPop_wFandM_specific_20240920.pdf")
+pdf(f, width = 20, height = 22)
+plot1 | plot2 + plot_annotation(tag_levels = 'A') 
+dev.off()
+```
+
+
+
+

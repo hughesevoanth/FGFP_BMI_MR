@@ -1,0 +1,378 @@
+---
+title: "Define Study Microbial Traits"
+author: "David Hughes"
+date: "3/16/2022"
+output: html_document
+---
+
+How shall we handle the taxonomic count filtering and the building of the MTs (microbial traits) ?
+
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#### LIBRARIES
+library(tidyverse)
+
+#### Parameters
+source("parameters/pfile.sh")
+# source("load.R")
+
+## Load Rdata file from script step03
+f = paste0(project_data_dir, "study_data_20240911_v1.1.Rdata")
+load( f )
+
+## source the needed function file
+source( "functions/build_mts.R" )
+```
+
+## Define initial study microbial traits data
+
+```{r}
+
+############################################
+## Limit the microbial traits to those with
+##  -- 1. at least 20 non-zero individuals
+##  ***  NO STEP 2 FILTER  ***
+##  -- 2. a zero-truncated mean count of 25 OR a minimum of 500 (5%) reads in at least 1 individual
+############################################
+## all taxa in data set
+all_mt_taxa = colnames(study_data$micro_data)[12:509]
+
+## Build the MT data
+MTdata = build_mts( wdata = study_data$micro_data[, all_mt_taxa], 
+                      PA_min_obs = 250,   ## The minimum number of PRESENT of ABSCENT Observations to build a PA trait
+                      trunc_AB_present_count = 1000, ## The minimum number of present observations to build a trunc_AB
+                      trunc_AB_absence_count = 250, ## The minimum number of absent (0's) observations to build a trunc_AB
+                      trunc_AB_mean = 20,  ## The minimum zero-truncated mean to build a trunc_AB
+                      AB_zero_present_proportion = 0.75, ## The maximum proportion of zero data to build an AB trait
+                      AB_mean_of_zero_trunc_data = 20 ## The minimum zero-truncated mean to build an AB trait
+)
+MTdata = as.data.frame(MTdata)
+
+dim(MTdata)
+```
+
+
+## Build Ratio Traits
+
+```{r}
+## Identify the AB traits
+w = grep("_AB", colnames(MTdata))
+ids = colnames(MTdata)[w]
+## Do not keep the truncated AB traits
+w = grep("trunc_AB", ids)
+ids = ids[-w]
+
+## Keep only those AB traits with a median count of 25
+med_count = apply(MTdata[, ids], 2, function(x){ median(x, na.rm = TRUE) })
+w = which(med_count >= 25)
+ids = ids[w]
+
+## Build a Spearman's Correlation matrix
+Cmat = cor(MTdata[, ids], method = "spearman", use = "pairwise.complete.obs")
+
+## Which trait pairs inversely correlate ? 
+l = apply(Cmat, 1, function(x){which(x < -0.2)})
+w =  which( lapply(l, length) >0 )
+l = l[w]
+##
+vals = list()
+for(i in names(l)){
+  r = l[[i]]
+  est = Cmat[i, r]
+  names(est) = names(l[[i]])
+  vals[[i]] = est
+}
+```
+
+## Identify trait pairs that correlate (pos and neg)
+
+```{r}
+x = 1
+ratio_trait_pairs = c()
+for(i in 1:ncol(Cmat)){
+  for(j in x:nrow(Cmat)){
+    # cat(paste0(i, " ", j,"\n"))
+    
+    ## Identify trait pairs that inversely correlate
+    #if( Cmat[i,j] <= -0.2){
+    
+    if( abs(Cmat[i,j]) >= 0.2 & abs(Cmat[i,j]) <= 0.9 ){
+      o = c(rownames(Cmat)[i],  colnames(Cmat)[j], Cmat[i,j] )
+      ratio_trait_pairs = rbind(ratio_trait_pairs, o)
+    }
+  }
+  x = x + 1
+}
+ratio_trait_pairs = as.data.frame(ratio_trait_pairs)
+colnames(ratio_trait_pairs) = c("trait_1","trait_2","Spearman_rho")
+```
+
+## Define the ratios
+
+```{r}
+
+new_ratio_trait_names = c()
+MT_ratios = c()
+for(i in 1:nrow(ratio_trait_pairs)){
+  tps = as.character( ratio_trait_pairs[i,1:2] )
+  n1 = tps[1]; n1 = strsplit(n1, split = "_")[[1]]
+  w = grep("AB", n1); w = c(w-1, w); n1 = paste(n1[-w], collapse = "_")
+  ##
+  n2 = tps[2]; n2 = strsplit(n2, split = "_")[[1]]
+  w = grep("AB", n2); w = c(w-1, w); n2 = paste(n2[-w], collapse = "_")
+  ##
+  n = paste0( n1, "|", n2)
+  newtrait = (MTdata[,tps[1]] +1) / (MTdata[,tps[2]] +1)
+  ##
+  new_ratio_trait_names = c(new_ratio_trait_names, n)
+  MT_ratios = cbind(MT_ratios, newtrait)
+}
+colnames(MT_ratios) = new_ratio_trait_names
+colnames(MT_ratios) = paste0(colnames(MT_ratios), "_RA")
+
+dim(MT_ratios)
+```
+
+## Redefine ratio_trait_pairs
+
+```{r}
+ratio_trait_pairs$ratio_trait_id = new_ratio_trait_names
+
+f = paste0(project_results_dir, "tables/ratio_trait_pairs_20240917.txt")
+write.table(ratio_trait_pairs, file = f, col.names = TRUE, row.names = FALSE, sep = "\t", quote = FALSE)
+```
+
+
+## Redefine the MTdata
+
+```{r}
+MTdata = cbind(MTdata, MT_ratios)
+dim(MTdata)
+```
+
+
+## Correlation Structure
+
+```{r , warning=FALSE, message=FALSE, error=FALSE}
+## Build a Spearman's correlation matrix
+Cmat = cor(MTdata, method = "sp", use = "pairwise.complete.obs")
+```
+
+
+```{r, fig.width = 20, fig.height = 20}
+M = Cmat
+M[is.na(M)] = 0
+
+corrplot::corrplot(M, method = 'color', order = 'hclust',  diag = FALSE, tl.cex = 0.3, tl.col = 'black')
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/mt_corplot_20240917.pdf")
+# f = paste0(project_results_dir, "figures/mt_corplot_v2_with_ratios.pdf")
+pdf(file = f, width = 25, height = 25)
+corrplot::corrplot(M, method = 'color', order = 'hclust',  diag = FALSE, tl.cex = 0.25, tl.col = 'black')
+dev.off()
+
+```
+
+## Identify the redundant, higher order taxa (MTs)
+
+```{r}
+Dmat = as.dist(1-abs(M))
+nj = hclust(Dmat)
+k = cutree(nj, h = 0.05)
+nrow(M)
+length(unique(k))
+```
+
+## Identify Primary Analysis taxa list
+
+```{r}
+TAXAORDER = c("K","P","C","O","F","G")
+
+## Identify K group with more than 1 MT
+# K_groups = names(  which( table(k) > 1 ) )
+K_groups = unique(k)
+
+## Identify the primary trait list
+primary_traits = c()
+
+## Run a Loops
+for(i in K_groups){
+  ## extract MT names
+  mt_names = names( which(k == i) )
+  
+  ## STEP 1: screen clusters that have (trunc)_AB, traits - we will always take an abundance trait over a PA or a RA trait
+  if( length( grep("AB", mt_names) ) > 0  ){
+    ## Let's limit the our list of possible traits to just the (trunc)AB traits
+    w = grep("AB", mt_names)
+    mt_names = mt_names[w]
+  }
+  
+  ## STEP 2: screen for trunc_AB and AB traits
+  if( length( grep("trunc_AB", mt_names) ) > 0 & length( grep("trunc_AB", mt_names) ) != length(mt_names)  ){
+    ## remove the trunc_AB traits
+    w = grep("trunc_AB", mt_names)
+    mt_names = mt_names[-w]
+  }
+  
+  ## Now just take the last trait in the vector as it should be the lowest order trait
+  primary_traits = c(primary_traits, mt_names[length(mt_names)])
+  
+}
+```
+
+
+## Concatenate all of the traits names for each k.
+
+```{r}
+K_traits = c()
+for(i in K_groups){
+  mt_names = names( which(k == i) )
+  if(length(mt_names) > 1){
+    x = paste(mt_names, collapse = " ; ")   
+  } else {
+    x = mt_names
+  }
+  
+  K_traits = c(K_traits, x)
+}
+```
+
+```{r}
+K_df = data.frame(primary_trait = primary_traits, 
+                  number_of_traits_in_cluster = as.numeric( table(k) ), 
+                  traits_in_cluster = K_traits)
+f = paste0(project_results_dir, "tables/Trait_Clusters_Primary_Trait_20240917.txt")
+write.table(K_df, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+
+
+## Identify taxa to remove
+
+```{r}
+# TAXAORDER = c("K","P","C","O","F","G")
+# 
+# ## Identify K group with more than 1 MT
+# K_groups = names(  which( table(k) > 1 ) )
+# ## Extract those MTs that ARE NOT the lowest taxonomic order
+# taxa_2_remove = c()
+# ##
+# for(i in K_groups){
+#   ## extract MT names
+#   mt_names = names( which(k == i) )
+#   ## screen for trunc_AB and AB traits
+#   if( length( grep("trunc_AB", mt_names) ) > 0 & length( grep("trunc_AB", mt_names) ) != length(mt_names)  ){
+#     ## take the trunc_AB taxa
+#     q = grep("trunc_AB", mt_names)
+#     trunc_AB_mts = mt_names[q]
+#     AB_mts = mt_names[-q]
+#     ##########################
+#     ## Process the trunc_AB taxa
+#     ##########################
+#     if(length(trunc_AB_mts) > 1){
+#       to = substring(trunc_AB_mts, 1,1)
+#       m = na.omit( match(TAXAORDER, to) )
+#       r = m[-length(m)]
+#       taxa_2_remove = c(taxa_2_remove, trunc_AB_mts[r] )
+#     }
+#     ##########################
+#     ## Process the AB taxa
+#     ##########################
+#     if(length(AB_mts) > 1) {
+#       to = substring(AB_mts, 1,1)
+#       m = na.omit( match(TAXAORDER, to) )
+#       r = m[-length(m)]
+#       taxa_2_remove = c(taxa_2_remove, AB_mts[r] )
+#     }
+#   
+#     ### If the mt_names do not include both trunc_AB and AB taxa names
+#     ### Process here:
+#   } else {
+#     if( length( grep("_RA", mt_names) ) > 0 ) {
+#       ## Keep the top order and remove the lower ones
+#       r = mt_names[2:length(mt_names)]
+#       taxa_2_remove = c(taxa_2_remove, r )
+#     } else {
+#       ## extract taxa order
+#       to = substring(mt_names, 1,1)
+#       m = na.omit( match(TAXAORDER, to) )
+#       r = m[-length(m)]
+#       taxa_2_remove = c(taxa_2_remove, mt_names[r] )
+#     }
+#   }
+#   
+#   
+# }
+```
+
+## Redefine Study_micro_data
+
+```{r}
+study_micro_data = cbind( study_data$micro_data[c("enterotype", "EnterotypeClass", 
+                                                  "Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum",
+                                                  "MDS1", "MDS2", 
+                                                  "Div_NumberGenera","Div_Shannon","Div_Chao1")] , 
+                          MTdata )
+```
+
+
+```{r}
+## Define a STUDY MICROBIOAL TRAIT Data Frame
+study_data$study_micro_data = study_micro_data
+study_data$primary_traits = primary_traits
+
+```
+
+
+```{r}
+#################################
+## RE-WRITE The project data frame
+#################################
+# "study_data_v1.2.Rdata" written April 3rd 2023
+n = paste0( project_data_dir , "study_data_20240917_v1.2.Rdata")
+save(study_data, file = n)
+
+```
+
+
+## Correlation Structure of STUDY MT DATA set
+
+```{r , warning=FALSE, message=FALSE, error=FALSE}
+## remove the enterotype data
+temp = study_data$study_micro_data[,-c(1:2)]
+## find the primary traits, while also keeping the diversity metrics
+w = c(1:9, which( colnames(temp) %in% primary_traits) )
+## redefine temp
+temp = temp[w,]
+for(i in 1:ncol(temp)){
+  temp[, i] = as.numeric( temp[, i] )
+}
+
+## Build a Spearman's correlation matrix -->
+Cmat = cor( temp, method = "sp", use = "pairwise.complete.obs")
+
+```
+
+
+```{r, fig.width = 20, fig.height = 20}
+M = Cmat
+M[is.na(M)] = 0 
+
+corrplot::corrplot(M, method = 'color', order = 'hclust',  diag = FALSE, tl.cex = 0.3, tl.col = 'black') 
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/mt_corplot_primarytraits_20240917.pdf")
+pdf(file = f, width = 20, height = 20)
+corrplot::corrplot(M, method = 'color', order = 'hclust',  diag = FALSE, tl.cex = 0.25, tl.col = 'black')
+dev.off()
+
+```
+
+

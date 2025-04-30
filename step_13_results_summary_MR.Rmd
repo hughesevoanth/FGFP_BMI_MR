@@ -1,0 +1,4469 @@
+---
+title: "Effect Estimates"
+author: "David Hughes"
+date: "3/16/2022"
+output: html_document
+---
+
+## Setting up the data
+
+### paramaters
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ivreg)
+
+source("parameters/pfile.sh")
+source("load.R")
+
+```
+
+
+```{r}
+## Define the MetaData table
+meta_data = study_data$meta_data
+
+## Define the Microbial Trait Data
+mt_data = study_data$study_micro_data
+primary_traits = study_data$primary_traits
+primary_traits = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum",
+                   "Div_NumberGenera","Div_Shannon","Div_Chao1",
+                   "MDS1","MDS2",
+                   primary_traits)
+
+## Define the batch_data table
+batch_data = study_data$batch_data
+for(i in 1:8){ batch_data[,i] = as.factor(batch_data[,i])  }
+```
+
+## Build the working data frame
+
+```{r}
+## working data
+mydata = cbind( meta_data, batch_data, mt_data )
+## we will be using imputed BMI as the default BMI
+w = which(colnames(mydata) == "imputed_BMI_online"); colnames(mydata)[w] = "BMI"
+## we will be using imputed sex as the default sex
+w = which(colnames(mydata) == "imputed_sex"); colnames(mydata)[w] = "sex"
+mydata$sex[mydata$sex == "m"] = "male"
+mydata$sex[mydata$sex == "v"] = "female"
+mydata$sex = as.factor(mydata$sex)
+## we will be using imputed age as the default age
+w = which(colnames(mydata) == "imputed_age"); colnames(mydata)[w] = "age"
+mydata$age = as.numeric(mydata$age)
+
+## alter colnames with a "|" as a function below does not like "|" 
+colnames(mydata) = gsub("\\|","__",colnames(mydata))
+```
+
+### Add a BMI category to mydata 
+
+```{r}
+mydata$bmi_cat = "underweight"
+w = which(mydata$BMI>18 & mydata$BMI<=25); mydata$bmi_cat[w] = "healthy"
+w = which(mydata$BMI>25 & mydata$BMI<=30); mydata$bmi_cat[w] = "overweight"
+w = which(mydata$BMI>30 ); mydata$bmi_cat[w] = "obesity"
+mydata$bmi_cat = factor(mydata$bmi_cat, levels = c("underweight","healthy","overweight","obesity"))
+table(mydata$bmi_cat)
+```
+
+## read in taxonomic data
+
+```{r}
+f = paste0(project_data_dir, "MT_taxonomy_20240920.txt")
+taxonomy = read.table(f, header = TRUE, sep = "\t", as.is = TRUE)
+```
+
+
+## Read in the results
+
+```{r}
+
+f = paste0(project_results_dir, "Derived_Estimates_20240917.Rdata")
+load(file = f)
+## LOADED OBJECT IS A LIST: "Derived_Estimates"
+
+
+# f = paste0(project_results_dir, "BMI_sensitivity_20240919.Rdata")
+f = paste0(project_results_dir, "BMI_sensitivity_20241206.Rdata")
+load(file = f)
+## LOADED OBJECT IS A LIST: "BMI_sensitivity"
+
+```
+
+## Redefine Trait Types in the summary stats result tables
+
+
+```{r}
+for(i in 1:length(Derived_Estimates)){
+  x = Derived_Estimates[[i]]
+  ## Place RA traits into it's own category
+  x$trait_type2 = x$trait_type
+  ## RA
+  w = grep("_RA", x$MR_outcome )
+  x$trait_type2[w] = "RA"
+  
+  ## Place Entero and Div into it's own categories
+  x$trait_type3 = x$trait_type2
+  ## Diversity
+  w = c( grep("MDS", x$MR_outcome ), grep("Div", x$MR_outcome )  )
+  x$trait_type3[w] = "Div"
+  ## Enterotype
+  w = c( grep("Enterotype_", x$MR_outcome  )  )
+  x$trait_type3[w] = "Entero"
+  
+  x$trait_type = factor(x$trait_type, levels = c("AB", "PA"))
+  x$trait_type2 = factor(x$trait_type2, levels = c("AB","RA","PA"))
+  x$trait_type3 = factor(x$trait_type3, levels = c("AB","RA","PA", "Div", "Entero"))
+  ## Redefine
+  Derived_Estimates[[i]] = x
+}
+
+############################
+## Sensitivity Results
+############################
+for(i in 1:length(BMI_sensitivity)){
+  x = BMI_sensitivity[[i]]
+  ## Place RA traits into it's own category
+  x$trait_type2 = x$trait_type
+  ## RA
+  w = grep("_RA", x$MR_outcome )
+  x$trait_type2[w] = "RA"
+  
+  ## Place Entero and Div into it's own categories
+  x$trait_type3 = x$trait_type2
+  ## Diversity
+  w = c( grep("MDS", x$MR_outcome ), grep("Div", x$MR_outcome )  )
+  x$trait_type3[w] = "Div"
+  ## Enterotype
+  w = c( grep("Enterotype_", x$MR_outcome  )  )
+  x$trait_type3[w] = "Entero"
+  
+  x$trait_type = factor(x$trait_type, levels = c("AB", "PA"))
+  x$trait_type2 = factor(x$trait_type2, levels = c("AB","RA","PA"))
+  x$trait_type3 = factor(x$trait_type3, levels = c("AB","RA","PA", "Div", "Entero"))
+  ## Redefine
+  BMI_sensitivity[[i]] = x
+
+}
+
+table(Derived_Estimates$BMI$trait_type)
+table(Derived_Estimates$BMI$trait_type2)
+table(Derived_Estimates$BMI$trait_type3)
+
+Derived_Estimates$BMI |> filter(MR_outcome %in% primary_traits) |> pull(trait_type3) |> table()
+
+```
+
+## Add taxonomic data to the results tables
+
+```{r}
+for(i in 1:length(Derived_Estimates)){
+  x = Derived_Estimates[[i]]
+  ## match
+  m = match(x$MR_outcome, taxonomy$trait_name2)
+  x = cbind(x , taxonomy[m,c(3,5:ncol(taxonomy))] )
+
+  ## Redefine
+  Derived_Estimates[[i]] = x
+}
+
+############################
+## Sensitivity Results
+############################
+for(i in 1:length(BMI_sensitivity)){
+  x = BMI_sensitivity[[i]]
+  ## match
+  m = match(x$MR_outcome, taxonomy$trait_name2)
+  x = cbind(x , taxonomy[m,c(3,5:ncol(taxonomy))] )
+
+  ## Redefine
+  BMI_sensitivity[[i]] = x
+
+}
+```
+
+## Add primary trait flag to the results table
+
+```{r}
+for(i in 1:length(Derived_Estimates)){
+  x = Derived_Estimates[[i]]
+  ## add primary trait flag
+  x = x |> mutate(primary_trait = ifelse(MR_outcome %in% primary_traits, 1, 0), .before = "MR_exposure")
+  ## Redefine
+  Derived_Estimates[[i]] = x
+}
+
+############################
+## Sensitivity Results
+############################
+for(i in 1:length(BMI_sensitivity)){
+  x = BMI_sensitivity[[i]]
+  ## add primary trait flag
+  x = x |> mutate(primary_trait = ifelse(MR_outcome %in% primary_traits, 1, 0), .before = "MR_exposure")
+  ## Redefine
+  BMI_sensitivity[[i]] = x
+
+}
+```
+
+## BMI MTs Causally associated with BMI
+
+```{r}
+##
+tout2 = Derived_Estimates$BMI %>% filter(primary_trait == 1 & MR_P < 0.05/33) %>% 
+  dplyr::select(MR_outcome, trait_type3, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq) %>% 
+  arrange(trait_type3, oe_P)
+## add taxonomy info
+m = match( rownames(tout2), taxonomy$trait_name)
+rownames(tout2)  = taxonomy$new_trait_name[m]
+tout2 = cbind(tout2, taxonomy[m, 5:ncol(taxonomy)])
+##
+nrow(tout2)
+```
+
+## Instrument on exposure effect.
+
+### Univariate Estimates from all the data
+
+```{r}
+cat(paste0("all\n"))
+fit = lm(BMI ~ pulit_bmi, data = mydata)
+a = anova(fit)
+a[1,2]/sum(a[,2])
+###
+cat(paste0("females\n"))
+w = which(mydata$sex == "female")
+fit = lm(BMI ~ pulit_bmi, data = mydata[w,])
+a = anova(fit)
+a[1,2]/sum(a[,2])
+###
+cat(paste0("males\n"))
+w = which(mydata$sex == "male")
+fit = lm(BMI ~ pulit_bmi, data = mydata[w,])
+a = anova(fit)
+a[1,2]/sum(a[,2])
+```
+### Female Specific PGS on female BMI
+
+```{r}
+###
+cat(paste0("female specific\n"))
+w = which(mydata$sex == "female")
+fit = lm(BMI ~ pulit_bmi_females, data = mydata[w,])
+a = anova(fit)
+a[1,2]/sum(a[,2])
+```
+
+
+### Male Specific PGS on male BMI
+
+```{r}
+###
+cat(paste0("male specific\n"))
+w = which(mydata$sex == "male")
+fit = lm(BMI ~ pulit_bmi_males, data = mydata[w,])
+a = anova(fit)
+a[1,2]/sum(a[,2])
+```
+
+
+
+### Average Variance Explained in exposure by instrument via the linear models used in assocation analyses
+
+```{r}
+
+
+cat(paste("\nPrimary Traits\n"))
+unlist( lapply(Derived_Estimates, function(x){ x |> filter(primary_trait == 1) |> summarize( mean_etasq = mean(x$ei_eta_sq))  }) )
+
+cat(paste("\nAll Traits\n"))
+unlist( lapply(Derived_Estimates, function(x){ mean(x$ei_eta_sq )  }) )
+
+```
+
+
+### Range of PGS-BMI estimates as 'n' changes among the truncated abundance traits. 
+
+```{r}
+lapply(Derived_Estimates, function(x){ 
+  w = grep("trunc", x$MR_outcome)
+  quantile(x$ei_eta_sq[w], probs = c(0, 0.5, 1))  
+  }) 
+```
+
+
+
+## Corrleation among Obs and MR associations
+
+```{r}
+## All primary observations
+a = Derived_Estimates$BMI |> filter(primary_trait == 1) |> 
+  summarize(r = cor.test(oe_beta, MR_beta)$estimate, 
+            p = cor.test(oe_beta, MR_beta)$p.value )
+
+## All primary AB observations
+b = Derived_Estimates$BMI |> filter(primary_trait == 1 &  trait_type2 == "AB") |> 
+  summarize(r = cor.test(oe_beta, MR_beta)$estimate, 
+            p = cor.test(oe_beta, MR_beta)$p.value )
+
+## All RA observations
+d = Derived_Estimates$BMI |> filter(primary_trait == 1 & trait_type2 == "RA") |> 
+  summarize(r = cor.test(oe_beta, MR_beta)$estimate, 
+            p = cor.test(oe_beta, MR_beta)$p.value )
+
+## All PA observations
+e = Derived_Estimates$BMI |> filter(primary_trait == 1 & trait_type2 == "PA") |> 
+  summarize(r = cor.test(oe_beta, MR_beta)$estimate, 
+            p = cor.test(oe_beta, MR_beta)$p.value )
+
+rbind(All = a, AB = b, RA = d, PA = e)
+  
+```
+
+
+
+### Build a temporary data set that only includes the primary traits.
+
+
+```{r}
+temp = Derived_Estimates$BMI |> filter(primary_trait == 1)
+
+temp$association_class2 = "null"
+
+w = which(temp$oe_P < 0.05/33 & temp$MR_P > 0.05/33)
+if(length(w)>0){ temp$association_class2[w] = "obs" }
+
+w = which(temp$oe_P > 0.05/33 & temp$MR_P < 0.05/33)
+if(length(w)>0){ temp$association_class2[w] = "MR" }
+
+w = which(temp$oe_P < 0.05/33 & temp$MR_P < 0.05/33)
+if(length(w)>0){ temp$association_class2[w] = "obs & MR" }
+
+
+temp$association_class2 = factor(temp$association_class2, levels = c( "null",
+                                                                      "obs & MR",
+                                                                      "obs", 
+                                                                      "MR" ) )
+
+## Add a column to declare significance
+temp = temp %>% mutate(sig = ifelse(MR_P < 0.05/33, "sig", "not sig" ) )
+
+## edit RA MT trait names
+# temp$MR_outcome = gsub("\\|"," | ",temp$MR_outcome)
+# temp$MR_outcome = gsub("_RA","",temp$MR_outcome)
+
+## A table of the associations class 2 definitions
+table(temp$association_class2)
+
+```
+
+
+### Wilcox signed-ranked test of difference in obs and MR effect estimates
+
+```{r}
+# t.test(temp$oe_beta, temp$MR_beta, paired = TRUE)
+
+## Absolute difference among estimates
+d = abs(temp$MR_beta - temp$oe_beta)
+
+cat(paste0("\nsummary of abs(dif)\n"))
+summary(abs(d))
+
+cat(paste0("\n95% PI\n"))
+quantile(d, probs = c(0.025, 0.975))
+
+## Wilcox signed-ranked test
+cat(paste0("\nWilcox test p-value\n"))
+wilcox.test(d, mu = 0)$p.value
+
+```
+
+
+## PLOT: Obs and MR estimates
+
+### Sum Stats for plot obf obs on MR
+
+```{r}
+## AB Pearson's correlation
+w = which(temp$trait_type2 == "AB")
+x = cor.test(temp$oe_beta[w], temp$MR_beta[w])
+ab_Pearson_r = c(x$estimate, x$p.value)
+ab_Pearson_r = paste0("Pearson's r = ", round(ab_Pearson_r[1],2), "\np = ", formatC(ab_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$MR_beta[w] ~ temp$oe_beta[w])
+AB_slope = summary(fit)$coef[2,1]
+
+## PA Pearson's correlation
+w = which(temp$trait_type2 == "PA")
+x = cor.test(temp$oe_beta[w], temp$MR_beta[w])
+pa_Pearson_r = c(x$estimate, x$p.value)
+pa_Pearson_r = paste0("Pearson's r = ", round(pa_Pearson_r[1],2), "\np = ", formatC(pa_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$MR_beta[w] ~ temp$oe_beta[w])
+PA_slope = summary(fit)$coef[2,1]
+
+
+## RA Pearson's correlation
+w = which(temp$trait_type2 == "RA")
+x = cor.test(temp$oe_beta[w], temp$MR_beta[w])
+ra_Pearson_r = c(x$estimate, x$p.value)
+ra_Pearson_r = paste0("Pearson's r = ", round(ra_Pearson_r[1],2), "\np = ", formatC(ra_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$MR_beta[w] ~ temp$oe_beta[w])
+RA_slope = summary(fit)$coef[2,1]
+
+
+## ANNOTATION TEXT
+ann_text = data.frame(label = c(ab_Pearson_r, ra_Pearson_r, pa_Pearson_r ),
+                      trait_type2 = c("AB","RA", "PA"), 
+                      x = c(0.02, 0.04, 0.04 ), 
+                      y = c(-0.100, -0.07, -0.26) )
+
+ann_text
+```
+
+### make the scatter plot
+
+```{r, fig.width = 8, fig.height = 14}
+pcol = RColorBrewer::brewer.pal( 9, "Set1")
+pcol = c("grey", pcol[1:3])
+###
+Obs_MR_Scatter = temp %>% ggplot(aes(x = oe_beta, y = MR_beta)) +
+  geom_smooth( method = "lm", formula = y ~ x , color = "blue", size = 1.5) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point( aes( color = association_class2), size = 4, alpha = 1) +
+  scale_color_manual(values = pcol) +
+  scale_shape_manual(values = c(20,17)) +
+  labs(shape = "MR\nassociation", color = "Association status",
+       x = "observational effect estimates", y = "MR effect estimates" ) +
+  facet_wrap(. ~ trait_type2, scales = "free", ncol = 1 ) +
+  geom_text( data = ann_text,
+             mapping = aes(x = x, y = y, label = label) ) +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  ggrepel::geom_text_repel( data = temp %>% filter( grepl("MR", association_class2)  ) , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0.017,
+                  box.padding = 0.17, 
+                  nudge_y = 0.005, nudge_x = 0.005, size = 2.25) +
+  
+  guides(shape = guide_legend(override.aes = list(size=c(5,3)))) +
+  guides(color = guide_legend(override.aes = list(size=5))) +
+  theme(legend.text=element_text(size=10))
+
+Obs_MR_Scatter
+```
+
+
+### save scatter plot to file
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_Obs_betas_scatterplot_20241130.pdf")
+pdf(f, width = 9, height = 15)
+Obs_MR_Scatter
+dev.off()
+
+```
+
+
+
+### MR Volcano Plot
+
+
+```{r, fig.width = 10, fig.height = 12}
+MR_Volcano = temp |>
+  ggplot(aes(y = -log10(MR_P), x = MR_beta )) +
+  # geom_point(aes(color = trait_type2, shape = sig), size = 4) +
+  geom_point(aes(color = trait_type2, shape = sig), size = 4) +
+  geom_hline(yintercept = -log10(0.05/33), linetype = "dashed", color = "grey50", size = 1.5) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = c(1, 19)) +
+  theme_bw() + 
+  theme(legend.position="bottom") +
+  labs(x = "effect estimate", y = "-log10 P-value", color = "MT type", shape = "significance") + 
+  ggrepel::geom_text_repel( data = temp %>% filter( MR_beta < 0 & sig == "sig") , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.45, 
+                  nudge_x = -0.05, size = 2.25) +
+  ggrepel::geom_text_repel( data = temp %>% filter( MR_beta > 0  & sig == "sig") , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0,
+                  box.padding = 0.15, 
+                  #label.padding = 0.35, 
+                  nudge_x = 0, size = 2.25)
+
+MR_Volcano
+```
+
+### save the volcano plot to file
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_volcano_20241130.pdf")
+pdf(f, width = 8, height = 10)
+MR_Volcano
+dev.off()
+
+```
+
+### combine the volcano and scatter plot
+
+```{r, fig.width = 15, fig.height = 12}
+library(patchwork)
+
+fig1 = MR_Volcano + Obs_MR_Scatter +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(width = c(1, 1.25) )
+
+fig1
+```
+
+### save the combined plot to file
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_Volcano_OBS_scatter_20241130.pdf")
+pdf(f, width = 15, height = 12)
+fig1
+dev.off()
+
+```
+
+
+
+## MR ASSOCIATIONS TABLED
+
+### Make a table of the MR associations
+
+```{r}
+Table2 = temp |> filter(MR_P < 0.05/33) |> arrange(trait_type3, MR_P ) |>
+  dplyr::select( MR_outcome, MR_n, Phylum, 
+                 phylum_ratio, phylum1, phylum2, taxa1, taxa2, 
+                 trait_type2, trait_type3,   
+                 oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P)
+
+```
+
+
+### Number of (MT trait type) associations
+
+```{r}
+cat(paste0("\ntotal number of observations\n"))
+nrow(Table2)
+
+cat(paste0("\n number of observations by trait type 2\n"))
+table( Table2$trait_type2 )
+
+
+cat(paste0("\n number of observations by trait type 3\n"))
+table( Table2$trait_type3 )
+```
+
+### Print non-RA MTs table to screen
+
+```{r}
+Table2 |> as_tibble() |> 
+  filter(trait_type3 != "RA") |>
+  arrange(trait_type3, phylum1, phylum2) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+### Print RA MTs table to screen
+
+```{r}
+Table2 |> as_tibble() |> 
+  filter(trait_type3 == "RA") |>
+  arrange(phylum1, phylum2, taxa1, taxa2) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+### Save table to file
+
+```{r}
+f = paste0(project_results_dir, "tables/table2_topresults_20240921.txt")
+write.table(Table2, file = f, row.names = TRUE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+## Genera Level Associations
+
+```{r}
+mr_genera = c("G_Alistipes_0.983_AB",
+              "G_Bacteroides_1_AB",
+              "G_Barnesiella_0.865_AB",
+              "G_Blautia_1_AB",
+              "G_Clostridium_IV_0.992_AB",
+              "G_Oscillibacter_0.981_AB",
+              "G_Roseburia_0.988_AB",
+              "G_Sporobacter_0.879_AB"
+              )
+
+mr_genera2 = c("G_Alistipes",
+              "G_Bacteroides",
+              "G_Barnesiella",
+              "G_Blautia",
+              "G_Clostridium_IV",
+              "G_Oscillibacter",
+              "G_Roseburia",
+              "G_Sporobacter"
+              )
+
+# mr_genera_traits = c("G_Sporobacter_0.879_AB", "G_Barnesiella_0.865_AB", "G_Sporobacter_0.879_PA",
+#                      "G_Bacteroides|G_Barnesiella_RA", "G_Bacteroides|G_unclassified_P_Firmicutes_RA",
+#                      "G_Blautia|G_unclassified_P_Firmicutes_RA", "F_Porphyromonadaceae|G_Bacteroides_RA",
+#                      "G_Roseburia|G_unclassified_P_Firmicutes_RA",
+#                      "F_Coriobacteriaceae|G_Sporobacter_RA", "G_Oscillibacter|G_unclassified_P_Firmicutes_RA",
+#                      "G_Blautia|G_unclassified_O_Clostridiales_RA", "F_Ruminococcaceae|G_Sporobacter_RA",
+#                      "G_Roseburia|G_Sporobacter_RA", "G_Alistipes|G_unclassified_P_Firmicutes_RA",
+#                      "G_Bacteroides|G_Sporobacter_RA", "G_Roseburia|G_unclassified_O_Clostridiales_RA",
+#                      "G_Clostridium_IV|G_unclassified_P_Firmicutes_RA", "G_Bacteroides|G_unclassified_O_Clostridiales_RA",
+#                      "G_Oscillibacter|G_unclassified_O_Clostridiales_RA", "F_Porphyromonadaceae|G_Roseburia_RA",
+#                      "G_Sporobacter|G_unclassified_F_Ruminococcaceae_RA", "G_Oscillibacter|G_Sporobacter_RA",
+#                      "F_Porphyromonadaceae|G_Blautia_RA")
+```
+
+## Make all ratios with the 8 Genera level taxa
+
+```{r}
+mrgenera_data = study_data$micro_data[, mr_genera2]
+names = c()
+
+a = 1
+for(i in 1:8){
+  a = a+1 
+  for(j in a:8){
+    bug1 = mr_genera2[i]
+    bug2 = mr_genera2[j]
+    o = paste0(bug1," | ", bug2)
+    names = c(names,o)
+  }
+}
+names = names[1:28]
+names2 = gsub(" \\| ","__", names)
+## make the ratios
+new_ratios = sapply(names, function(x){
+  b1 = strsplit(x, split = " | ")[[1]][1]
+  b2 = strsplit(x, split = " | ")[[1]][3]
+  ratio = (mrgenera_data[, b1]+1) / (mrgenera_data[, b2]+1)
+  return(ratio)
+})
+colnames(new_ratios) = names2
+
+## Redefine
+mrgenera_data = cbind(mrgenera_data, new_ratios)
+mrgenera_data = mrgenera_data |> mutate(vdp_ids = rownames(mrgenera_data), .before = "G_Alistipes")
+```
+
+```{r}
+wdata = left_join(mydata[, c("vdp_ids", "age","sex","BMI","pulit_bmi")], mrgenera_data, by = "vdp_ids")
+
+```
+
+
+```{r}
+out = t( 
+    sapply(colnames(mrgenera_data)[-1], function(mt){
+      ivtoolsfit( wdata = wdata,
+                  outcome = mt,
+                  exposure = "BMI",
+                  instrument = "pulit_bmi",
+                  covariates = c( "sex","age"),
+                  outcome_model_family = "gaussian",
+                  exposure_model_family = "gaussian",
+                  weights = NA,
+                  rnt_outcome = TRUE)
+      } ) 
+    )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = c(rep("AB", 8), rep("RA", 28))
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "all"
+```
+
+```{r}
+x = out_long = out |> select(MR_outcome, oe_beta, MR_beta, oe_P, MR_P)
+x = x |> mutate( sig = "no assoc.")
+
+w = which(x$MR_P < 0.05/33 & x$oe_P < 0.05/33)
+x$sig[w] = "Obs. & MR assoc."
+
+w = which(x$MR_P < 0.05/33 & x$oe_P > 0.05/33)
+x$sig[w] = "MR assoc."
+
+w = which(x$MR_P > 0.05/33 & x$oe_P < 0.05/33)
+x$sig[w] = "Obs. assoc."
+
+## Redefine MR Outcome name
+x$MR_outcome = gsub("__"," | ", x$MR_outcome)
+
+## Set Levels
+x$sig = factor(x$sig, levels = c("no assoc.","Obs. assoc.","MR assoc.", "Obs. & MR assoc."))
+```
+
+
+## Obs vs MR scatter plot
+
+```{r}
+pcol = c( "grey40", RColorBrewer::brewer.pal(3, "Set1"))
+
+splot = x |> ggplot(aes(x = oe_beta, y = MR_beta)) +
+  ## lines
+  geom_vline(xintercept = 0, linetype = "dotted", color = "grey20", size = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "grey20", size = 0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey20") +
+  geom_smooth(method = lm, formula = y~x, se = FALSE, color = "black", size = 0.5) +
+  ## points
+  geom_point(aes(color = sig), size = 4, alpha = 0.6) +
+  ## TEXT
+  # geom_text( x |> filter(oe_beta > 0), mapping = aes(label = MR_outcome), size = 1.5, nudge_x= -0.005) +
+  # ggrepel::geom_text_repel(x |> filter(oe_beta > 0), mapping = aes(label = MR_outcome), size = 2, 
+  #                          nudge_x = -0.005, nudge_y = 0.001) +
+  ggrepel::geom_text_repel( mapping = aes(label = MR_outcome, color = sig), size = 2, 
+                           xlim = c(NA, NA), show.legend = FALSE) +
+  scale_color_manual(values = pcol) +
+  labs(x = "observational beta", y = "MR beta", color = "association") +
+  theme_bw() +
+  theme(legend.position="bottom")
+
+
+splot
+```
+
+
+```{r}
+out_long = out |> select(MR_outcome, oe_beta, MR_beta, oe_P, MR_P) |> pivot_longer(cols = c(oe_beta, MR_beta, oe_P, MR_P),
+                        names_to = c("model", ".value"), names_sep = "_")
+out_long = out_long |> mutate(model = ifelse(model == "oe", "obs", "MR") )
+
+```
+
+## An edited version of ggforestplot::forestplot
+
+This allows you to re-order the MT in the plot. Rather than have them forced to be alphabetical.
+
+```{r}
+myfp = function (df, name = name, estimate = estimate, se = se, pvalue = NULL, 
+          colour = NULL, shape = NULL, logodds = FALSE, psignif = 0.05, 
+          ci = 0.95, ...) 
+{
+  stopifnot(is.data.frame(df))
+  stopifnot(is.logical(logodds))
+  name <- enquo(name)
+  estimate <- enquo(estimate)
+  se <- enquo(se)
+  pvalue <- enquo(pvalue)
+  colour <- enquo(colour)
+  shape <- enquo(shape)
+  args <- list(...)
+  const <- stats::qnorm(1 - (1 - ci)/2)
+  # df <- df %>% dplyr::mutate(`:=`(!!name, factor(!!name, levels = !!name %>% 
+  #                                                  unique() %>% rev(), ordered = TRUE)), .xmin = !!estimate - 
+  #                              const * !!se, .xmax = !!estimate + const * !!se, .filled = TRUE, 
+  #                            .label = sprintf("%.2f", !!estimate))
+  df <- df %>% dplyr::mutate( .xmin = !!estimate - 
+                               const * !!se, .xmax = !!estimate + const * !!se, .filled = TRUE, 
+                             .label = sprintf("%.2f", !!estimate))
+  if (logodds) {
+    df <- df %>% mutate(.xmin = exp(.data$.xmin), .xmax = exp(.data$.xmax), 
+                        `:=`(!!estimate, exp(!!estimate)))
+  }
+  if (!rlang::quo_is_null(pvalue)) {
+    df <- df %>% dplyr::mutate(.filled = !!pvalue < !!psignif)
+  }
+  g <- ggplot2::ggplot(df, aes(x = !!estimate, y = !!name))
+  if (logodds) {
+    if ("xtickbreaks" %in% names(args)) {
+      g <- g + scale_x_continuous(trans = "log10", breaks = args$xtickbreaks)
+    }
+    else {
+      g <- g + scale_x_continuous(trans = "log10", breaks = scales::log_breaks(n = 7))
+    }
+  }
+  g <- g + theme_forest() + scale_colour_ng_d() + scale_fill_ng_d() + 
+    geom_stripes() + geom_vline(xintercept = ifelse(test = logodds, 
+                                                    yes = 1, no = 0), linetype = "solid", size = 0.4, colour = "black")
+  g <- g + geom_effect(ggplot2::aes(xmin = .data$.xmin, xmax = .data$.xmax, 
+                                    colour = !!colour, shape = !!shape, filled = .data$.filled), 
+                       position = ggstance::position_dodgev(height = 0.5)) + 
+    ggplot2::scale_shape_manual(values = c(21L, 22L, 23L, 
+                                           24L, 25L)) + guides(colour = guide_legend(reverse = TRUE), 
+                                                               shape = guide_legend(reverse = TRUE))
+  if ("title" %in% names(args)) {
+    g <- g + labs(title = args$title)
+  }
+  if ("subtitle" %in% names(args)) {
+    g <- g + labs(subtitle = args$subtitle)
+  }
+  if ("caption" %in% names(args)) {
+    g <- g + labs(caption = args$caption)
+  }
+  if ("xlab" %in% names(args)) {
+    g <- g + labs(x = args$xlab)
+  }
+  if (!"ylab" %in% names(args)) {
+    args$ylab <- ""
+  }
+  g <- g + labs(y = args$ylab)
+  if ("xlim" %in% names(args)) {
+    g <- g + coord_cartesian(xlim = args$xlim)
+  }
+  if ("ylim" %in% names(args)) {
+    g <- g + ylim(args$ylim)
+  }
+  if ("xtickbreaks" %in% names(args) & !logodds) {
+    g <- g + scale_x_continuous(breaks = args$xtickbreaks)
+  }
+  g
+}
+
+```
+
+
+```{r}
+out_genera = ivtoolsfit_2_longformat(data = out,  pop_id = "gen_pop", alpha = 0.05/33 )
+out_genera$outcome = gsub("__"," | ",out_genera$outcome)
+out_genera$analysis = gsub("tsls_gen_pop","MR",out_genera$analysis)
+out_genera$analysis = gsub("obs_gen_pop","obs",out_genera$analysis)
+
+library(ggforestplot)
+
+w = grep(" | ", out_genera$outcome)
+a = out_genera[-w,]
+o = a |> filter(analysis == "MR") |> arrange(desc(beta)) |> pull(outcome)
+a$outcome = factor(a$outcome, levels = o)
+
+# plot1 = ggforestplot::forestplot(
+plot1 = myfp(
+  df = a,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "genera level microbial traits: ABs",
+  xlab = "1 rank normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = c("black","red")) +
+  theme(legend.position="bottom") +
+  # ggforce::facet_col(
+  #   facets = ~phylum,
+  #   scales = "free_y",
+  #   space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+
+b = out_genera[w,]
+o = b |> filter(analysis == "MR") |> arrange(desc(beta)) |> pull(outcome)
+b$outcome = factor(b$outcome, levels = o)
+
+plot2 = myfp(
+  df = b  ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "genera level microbial traits: RAs",
+  xlab = "1 rank normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = c("black","red")) +
+  theme(legend.position="bottom") +
+  # ggforce::facet_col(
+  #   facets = ~phylum,
+  #   scales = "free_y",
+  #   space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+```
+
+```{r, fig.width = 12, fig.height = 7}
+library(patchwork)
+(plot1 + plot2 + plot_layout(widths = c(1, 1.25)) ) # + plot_layout(guides = 'collect')
+```
+
+
+
+```{r}
+# # Cmat = cor(mydata[, mr_genera], method = "sp")
+# Cmat = Hmisc::rcorr( as.matrix(mydata[, mr_genera]), type = "spearman")
+# 
+# corrplot::corrplot(Cmat$r, type = "full",method = 'shade', 
+#                    order = 'FPC', hclust.method = "complete",
+#                    diag = FALSE,
+#                    addCoef.col = 'grey30', 
+#                    tl.srt = 25, tl.col = 'black', tl.cex = 0.45,
+#                    cl.ratio = 0.2, cl.pos = "b", shade.lwd = 0
+#                    #p.mat = Cmat$P, sig.level = 0.05, insig='blank', pch.cex = 0.5
+#                    )
+```
+
+
+```{r}
+## Correlation Matrix
+Cmat = cor(mydata[, mr_genera], method = "sp")
+## Plot order
+nj = hclust(as.dist(1-Cmat), method = "average")
+plot_order = nj$labels[nj$order]
+
+# Cmat = Cmat[plot_order, plot_order]
+
+## Redefine Cmat to make a long format data sert
+Cmat <- Cmat |>
+  as.data.frame() |>
+  rownames_to_column(var = "mt1")
+
+## pivot longer
+Cmat_long <- Cmat |>
+  pivot_longer(
+    cols = -mt1,
+    names_to = "mt2",
+    values_to = "rho"
+  )
+
+Cmat_long$mt1 = factor(Cmat_long$mt1, levels = plot_order)
+Cmat_long$mt2 = factor(Cmat_long$mt2, levels = plot_order)
+```
+
+```{r}
+pcol = RColorBrewer::brewer.pal(3, "Set1")
+##
+Corplot = Cmat_long |> mutate(rho = ifelse(rho == 1, NA, rho ) ) |>
+  ggplot( aes(x = mt1, y = mt2, fill = rho)) +
+  geom_tile() +
+  # scale_fill_viridis_c() +
+  # scale_fill_gradientn(colours = RColorBrewer::brewer.pal(7,"RdBu"), na.value = "white") +
+  scale_fill_gradient2(low = pcol[1], mid = "white", high = pcol[2], 
+                       midpoint = 0, na.value = NA ) +
+  geom_text(aes(label = round(rho, d = 2) ), color = "grey30", size = 3) +
+  coord_fixed() +
+  theme_bw() +
+  labs(x = "MT", y = "MT") +
+  scale_x_discrete(position = "top") +
+  theme(axis.text.x = element_text(angle = 25, hjust = 0.05)) +
+  theme(legend.position="bottom")
+  
+```
+
+```{r, fig.width = 6, fig.height = 12}
+z = out |> select(oe_n, oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P )
+rownames(z) = gsub("__"," | ",rownames(z))
+colnames(z) = c("n","obs beta","obs se","obs p","MR beta","MR se","MR p")
+for(i in c(2,3,5,6)){
+  z[,i] = round(z[,i], d = 3)
+}
+
+for(i in c(4,7)){
+  z[,i] = sprintf("%.2e", z[,i])
+}
+
+
+tplot = ggpubr::ggtexttable( z )
+```
+
+
+```{r, fig.width = 12, fig.height = 16}
+# ( ( (Corplot + splot ) /
+# (plot1 + plot2 + plot_layout(widths = c(1, 1.25)) ) ) + plot_layout(heights = c(1.5, 1)) ) /
+#   tplot #+ plot_annotation(tag_levels = 'A')
+
+f = paste0(project_results_dir, "figures/SupFigure6.pdf")
+pdf(file = f, height = 16, width = 14)
+
+(Corplot + splot) /
+(plot1 + plot2) + plot_annotation(tag_levels = 'A')
+
+dev.off()
+```
+
+
+
+## Phylum and taxa observed in BMI associated RA MTs
+
+### Phylum counts
+
+```{r}
+a = Table2 |> filter(trait_type3 == "RA") |> pull(phylum1)
+b = Table2 |> filter(trait_type3 == "RA") |> pull(phylum2)
+
+cat(paste0("\nNumber of phylum\n"))
+length( unique( na.omit(c(a,b) ) ) )
+
+cat(paste0("\nNumber of observations for each phylum\n"))
+table( na.omit( c(a,b) ) )
+```
+
+
+### taxa counts
+
+```{r}
+a = Table2 |> filter(trait_type3 == "RA") |> pull(taxa1)
+b = Table2 |> filter(trait_type3 == "RA") |> pull(taxa2)
+
+cat(paste0("\nNumber of taxa\n"))
+length( unique( na.omit(c(a,b) ) ) )
+
+cat(paste0("\nNumber of observations for each taxa"))
+sort( table( na.omit( c(a,b) )), decreasing = TRUE )
+```
+
+### taxonomic Order of the traits 
+
+```{r}
+tt = unique( na.omit( c(a,b) ) )
+
+Ord = sapply(tt, function(x){
+  taxonomy$Order[which(taxonomy$trait_taxa == x)[1]]
+})
+table(Ord)
+
+```
+
+
+### The number of RA MTs Orders Bacteroidales & Clostridiales are involved in
+
+```{r}
+x = Table2 |> filter(trait_type3 == "RA") |> pull(MR_outcome)
+orders_obs = sapply(x, function(z){
+  n = strsplit(z, split = " | ")[[1]]
+  a = n[1]; b = n[3]
+  ##
+  d = taxonomy$Order[which(taxonomy$trait_taxa == a)[1]]
+  e = taxonomy$Order[which(taxonomy$trait_taxa == b)[1]]
+  out = paste0(d, "  ", e)
+  return(out)
+  
+})
+
+length( grep("Bacteroidales", orders_obs) )
+length( grep("Clostridiales", orders_obs) )
+```
+
+## SEX SPECIFIC Framework
+
+### Table Female observations
+
+```{r}
+female_MR_associations = Derived_Estimates$BMI_females %>% filter(primary_trait == 1 & MR_P < 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_outcome, MR_n, Phylum, 
+                 phylum_ratio, phylum1, phylum2, taxa1, taxa2, 
+                 trait_type2, trait_type3,   
+                 oe_beta, oe_se, oe_P, 
+                 MR_beta, MR_se, MR_P,
+                 MR_Wald_F, MR_dhat_r2, Wu_Hausman_stat, Wu_Hausman_P,)
+  
+# female_MR_associations$MR_outcome = gsub("\\|", " | ", female_MR_associations$MR_outcome)
+# female_MR_associations$MR_outcome = gsub("_RA", "", female_MR_associations$MR_outcome)
+```
+
+### number of female observations
+
+```{r}
+nrow(female_MR_associations)
+
+table(female_MR_associations$trait_type2)
+
+table(female_MR_associations$trait_type3)
+```
+### Print female table to screen
+
+```{r}
+female_MR_associations |> as_tibble() |> arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+###  Female MR assocations also seen in Overall Observations
+
+```{r}
+female_MR_associations |> as_tibble() |> filter(MR_outcome %in% Table2$MR_outcome) |>
+  arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+### Unique Female MR assocations
+
+```{r}
+female_MR_associations |> as_tibble() |> filter(!MR_outcome %in% Table2$MR_outcome) |>
+  arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+### Table Male observations
+
+```{r}
+male_MR_associations = Derived_Estimates$BMI_males %>% filter(primary_trait == 1 & MR_P < 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_outcome, MR_n, Phylum, 
+                 phylum_ratio, phylum1, phylum2, taxa1, taxa2, 
+                 trait_type2, trait_type3,   
+                 oe_beta, oe_se, oe_P, 
+                 MR_beta, MR_se, MR_P,
+                 MR_Wald_F, MR_dhat_r2, Wu_Hausman_stat, Wu_Hausman_P,)
+  
+# male_MR_associations$MR_outcome = gsub("\\|", " | ", male_MR_associations$MR_outcome)
+# male_MR_associations$MR_outcome = gsub("_RA", "", male_MR_associations$MR_outcome)
+```
+
+### Print male table to screen
+
+```{r}
+male_MR_associations |> as_tibble() |> arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+### Correlation between male and female estimates
+
+```{r}
+f = Derived_Estimates$BMI_females |> filter(primary_trait == 1) |> pull(MR_beta)
+m = Derived_Estimates$BMI_males |> filter(primary_trait == 1) |> pull(MR_beta)
+a = cor.test(f,m)
+a$estimate
+a$p.value
+```
+
+## Difference in male and female MR estimates
+
+```{r}
+d = abs(f-m)
+
+cat(paste0("\nSummary of abosulte differences\n"))
+summary(d)
+
+
+cat(paste0("\n95% QI\n"))
+quantile(d, probs = c(0.025, 0.975))
+
+
+cat(paste0("\nWilcox test p-value\n"))
+wilcox.test(d, m = 0, exact = TRUE, conf.int = TRUE)
+
+
+wilcox.test(d, m = 0, exact = TRUE)$p.value
+```
+
+
+## SEX SPECIFIC Framework with Sex-specific PGS
+
+### Table Female observations
+
+```{r}
+female_MR_associations_fPGS = Derived_Estimates$BMI_females_fGRS %>% filter(primary_trait == 1 & MR_P < 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_outcome, MR_n, Phylum, 
+                 phylum_ratio, phylum1, phylum2, taxa1, taxa2, 
+                 trait_type2, trait_type3,   
+                 oe_beta, oe_se, oe_P, 
+                 MR_beta, MR_se, MR_P,
+                 MR_Wald_F, MR_dhat_r2, Wu_Hausman_stat, Wu_Hausman_P,)
+  
+female_MR_associations_fPGS$MR_outcome = gsub("\\|", " | ", female_MR_associations_fPGS$MR_outcome)
+female_MR_associations_fPGS$MR_outcome = gsub("_RA", "", female_MR_associations_fPGS$MR_outcome)
+```
+
+### number of female observations
+
+```{r}
+nrow(female_MR_associations_fPGS)
+
+table(female_MR_associations_fPGS$trait_type2)
+
+table(female_MR_associations_fPGS$trait_type3)
+```
+### Print female table to screen
+
+```{r}
+female_MR_associations_fPGS |> as_tibble() |> arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+###  fPGS Female MR assocations also seen in gen_pop FEMALE Observations
+
+```{r}
+female_MR_associations_fPGS |> as_tibble() |> filter(!MR_outcome %in% female_MR_associations$MR_outcome) |>
+  arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+### fPGS specific observations in gen_pop female estimates
+
+```{r}
+x = female_MR_associations_fPGS |> as_tibble() |> 
+  filter(!MR_outcome %in% female_MR_associations$MR_outcome) |> pull(MR_outcome)
+x = gsub(" ", "", x)
+x[1] = paste0(x[1], "_RA")
+  
+Derived_Estimates$BMI_females |> filter(MR_outcome %in% x ) |>
+   knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+### G_Adlercreutzia_0.658_PA in female specific PGS estimates
+
+```{r}
+Derived_Estimates$BMI_females_fGRS |> filter(MR_outcome == "G_Adlercreutzia_0.658_PA") |>
+   knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+### G_Adlercreutzia_0.658_PA in male  estimates
+
+```{r}
+Derived_Estimates$BMI_males |> as_tibble() |> filter(MR_outcome == "G_Adlercreutzia_0.658_PA") |>
+  select(MR_outcome, MR_beta, MR_se, MR_P) |>
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+### G_Adlercreutzia_0.658_PA in male specific PGS estimates
+
+```{r}
+Derived_Estimates$BMI_males_mGRS |> as_tibble() |> filter(MR_outcome == "G_Adlercreutzia_0.658_PA") |>
+  select(MR_outcome, MR_beta, MR_se, MR_P) 
+#  knitr::kable() |> kableExtra::kable_classic()
+```
+
+### Table Male observations
+
+```{r}
+male_MR_associations = Derived_Estimates$BMI_males_mGRS %>% filter(primary_trait == 1 & MR_P < 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_outcome, MR_n, Phylum, 
+                 phylum_ratio, phylum1, phylum2, taxa1, taxa2, 
+                 trait_type2, trait_type3,   
+                 oe_beta, oe_se, oe_P, 
+                 MR_beta, MR_se, MR_P,
+                 MR_Wald_F, MR_dhat_r2, Wu_Hausman_stat, Wu_Hausman_P,)
+  
+male_MR_associations$MR_outcome = gsub("\\|", " | ", male_MR_associations$MR_outcome)
+male_MR_associations$MR_outcome = gsub("_RA", "", male_MR_associations$MR_outcome)
+```
+
+### Print male table to screen
+
+```{r}
+male_MR_associations |> as_tibble() |> arrange(trait_type3, MR_P) |> 
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+### Correlation between female and female fPGS specific estimates
+
+```{r}
+f = Derived_Estimates$BMI_females |> filter(primary_trait == 1) |> pull(MR_beta)
+fs = Derived_Estimates$BMI_females_fGRS |> filter(primary_trait == 1) |> pull(MR_beta)
+a = cor.test(f,fs)
+a$estimate
+a$p.value
+```
+
+### Difference in female and female PGS-specific MR estimates
+
+```{r}
+d = abs(f-fs)
+
+cat(paste0("\nSummary of abosulte differences\n"))
+summary(d)
+
+cat(paste0("\n95% QI\n"))
+quantile(d, probs = c(0.025, 0.975))
+
+
+cat(paste0("\nWilcox test p-value\n"))
+wilcox.test(d, m = 0, exact = TRUE, conf.int = TRUE)
+
+wilcox.test(d, m = 0, exact = TRUE, conf.int = TRUE)$p.value
+```
+
+### Correlation between male and male mPGS specific estimates
+
+```{r}
+m = Derived_Estimates$BMI_males |> filter(primary_trait == 1) |> pull(MR_beta)
+ms = Derived_Estimates$BMI_males_mGRS |> filter(primary_trait == 1) |> pull(MR_beta)
+a = cor.test(m,ms)
+a$estimate
+a$p.value
+```
+
+### Difference in female and female PGS-specific MR estimates
+
+```{r}
+d = abs(m-ms)
+
+cat(paste0("\nSummary of abosulte differences\n"))
+summary(d)
+
+cat(paste0("\n95% QI\n"))
+quantile(d, probs = c(0.025, 0.975))
+
+
+cat(paste0("\nWilcox test p-value\n"))
+wilcox.test(d, m = 0, exact = TRUE, conf.int = TRUE)
+
+wilcox.test(d, m = 0, exact = TRUE, conf.int = TRUE)$p.value
+```
+
+
+## Sensitivity Results
+
+### correlation of observational results
+
+```{r}
+a = Derived_Estimates$BMI |> filter(primary_trait == 1) |> pull(oe_beta)
+b = BMI_sensitivity$BMI |> filter(primary_trait == 1) |> pull(oe_beta)
+cor.test(a,b)$estimate
+cor.test(a,b)$p.value
+```
+
+```{r}
+a = Derived_Estimates$BMI |> filter(primary_trait == 1) |> pull(MR_beta)
+b = BMI_sensitivity$BMI |> filter(primary_trait == 1) |> pull(MR_beta)
+cor.test(a,b)$estimate
+cor.test(a,b)$p.value
+```
+
+
+```{r}
+# BMI_sensitivity$BMI$MR_outcome = gsub("\\|"," | ",BMI_sensitivity$BMI$MR_outcome)
+# BMI_sensitivity$BMI$MR_outcome = gsub("_RA","",BMI_sensitivity$BMI$MR_outcome)
+# 
+# Derived_Estimates$BMI$MR_outcome = gsub("\\|"," | ",Derived_Estimates$BMI$MR_outcome)
+# Derived_Estimates$BMI$MR_outcome = gsub("_RA","",Derived_Estimates$BMI$MR_outcome)
+
+## ---- beta ---
+a = BMI_sensitivity$BMI |> filter(MR_outcome %in% Table2$MR_outcome) |> pull(MR_beta) 
+b = Derived_Estimates$BMI |> filter(MR_outcome %in% Table2$MR_outcome) |> pull(MR_beta) 
+d = abs(b - a)
+wilcox.test(d)
+cor.test(a,b)
+
+## ---- SE ---
+a = BMI_sensitivity$BMI |> filter(MR_outcome %in% Table2$MR_outcome) |> pull(MR_se) 
+b = Derived_Estimates$BMI |> filter(MR_outcome %in% Table2$MR_outcome) |> pull(MR_se) 
+t.test(a,b, paired = TRUE)
+
+summary( BMI_sensitivity$BMI |> filter(MR_outcome %in% Table2$MR_outcome) |> pull(MR_P) )
+
+quantile( BMI_sensitivity$BMI |> filter(MR_outcome %in% Table2$MR_outcome) |> pull(MR_P), probs = c(0, 0.025, 0.975, 1) )
+```
+
+
+
+## Correlation of Primary and Sensitivity MR effect estimates
+
+```{r, fig.width = 12, fig.height = 8}
+temp_df = data.frame(outcome = Derived_Estimates$BMI$MR_outcome,
+                     trait_type = as.factor(Derived_Estimates$BMI$trait_type3),
+                     primary_beta  = Derived_Estimates$BMI$MR_beta, 
+                     primary_se  = Derived_Estimates$BMI$MR_se, 
+                     primary_p  = Derived_Estimates$BMI$MR_P, 
+                     sensitivity_beta  = BMI_sensitivity$BMI$MR_beta, 
+                     sensitivity_se  = BMI_sensitivity$BMI$MR_se, 
+                     sensitivity_p  = BMI_sensitivity$BMI$MR_P,
+                     primary_trait = Derived_Estimates$BMI$primary_trait
+                     
+                     )
+temp_df = temp_df |> mutate(primary_lower = primary_beta - (1.96*primary_se),
+                            primary_upper = primary_beta + (1.96*primary_se),
+                            sensitivity_lower = sensitivity_beta - (1.96*sensitivity_se),
+                            sensitivity_lower = sensitivity_beta - (1.96*sensitivity_se))
+
+## Estiamte Pearson's rho
+pearson_rho = temp_df |> filter(primary_trait == 1) |> summarize(rho = round( cor.test(primary_beta, sensitivity_beta)$estimate, d = 3) )
+pearson_rho = unlist(pearson_rho)
+
+
+## Make a scatter plot
+plot_ps = temp_df |> filter(outcome %in% primary_traits) |> ggplot(aes(x = primary_beta, y = sensitivity_beta)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey30") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey30") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dotted", color = "black") +
+  geom_point(aes(color = trait_type, size = -log10(primary_p)), alpha = 0.5) +
+  theme_bw() +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap(~trait_type, nrow = 2, scales = "free") +
+  labs(title = paste0("Primary -vs- Sensitivity MR estimates: Pearson's rho = ", pearson_rho), 
+       subtitle = paste0("additional sensitivity covariables: total read count, bristol stool score, J01 antibiotic use, smoking (NEC), household income,\n          have high BP, have diabetes, followed a diet last week") )
+
+plot_ps
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_Primary_vs_Sensitivity_betas.pdf")
+pdf(file = f, height = 12, width = 8)
+plot_ps
+dev.off()
+
+
+```
+
+
+## Forest Plot of MR associations
+
+
+### Bring data together for forest plot
+
+```{r}
+BMI_gen = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "gen_pop", alpha = 0.05/33 )
+
+BMI_females = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females, 
+                                        pop_id = "females", alpha = 0.05/33 )
+
+BMI_males = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males, 
+                                        pop_id = "males", alpha = 0.05/33 )
+
+BMI_females_fGRS = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females_fGRS, 
+                                        pop_id = "females_fPGS", alpha = 0.05/33 )
+
+BMI_males_mGRS = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males_mGRS, 
+                                        pop_id = "males_mPGS", alpha = 0.05/33 )
+
+
+BMI_all = rbind(BMI_gen, BMI_females, BMI_males, BMI_females_fGRS, BMI_males_mGRS)
+
+# w = grep("obs", BMI_all$analysis)
+# BMI_all = BMI_all[-w,]
+
+
+BMI_all$analysis = factor(BMI_all$analysis, 
+                          levels = c("tsls_gen_pop", 
+                                     "tsls_females","tsls_females_fPGS",
+                                     "tsls_males","tsls_males_mPGS",
+                                     "obs_gen_pop", 
+                                     "obs_females", "obs_females_fPGS", 
+                                     "obs_males", "obs_males_mPGS")[10:1] )
+
+# BMI_all$analysis = factor(BMI_all$analysis, 
+#                           levels = c("tsls_gen_pop","tsls_females","tsls_females_fPGS","tsls_males","tsls_males_mPGS")[5:1] )
+
+
+pt = gsub("\\|"," | ", primary_traits); pt = gsub("_RA","", pt)
+BMI_all = BMI_all |> filter(outcome %in% pt)
+
+tn = gsub("\\|"," | ",taxonomy$trait_name2); tn = gsub("_RA","", tn)
+m = match(BMI_all$outcome, tn )
+BMI_all$phylum = taxonomy$Phylum[m]
+w = which( is.na( BMI_all$phylum ) )
+
+if(length(w)>1){ BMI_all$phylum[w] = taxonomy$phylum_ratio[m[w]] }
+
+# BMI_all$outcome = gsub("\\|"," | ",BMI_all$outcome)
+BMI_all$phylum = gsub("\\|"," | ", BMI_all$phylum)
+
+# BMI_all$outcome = gsub("_RA","",BMI_all$outcome)
+
+```
+
+### remove the sex-specific PGS estimates
+
+```{r}
+a = grep("_fPGS", BMI_all$analysis)
+b = grep("_mPGS", BMI_all$analysis)
+r = c(a,b)
+BMI_all_2 = BMI_all[-r, ]
+```
+
+### Redefine the levels
+
+```{r}
+BMI_all_2$analysis = factor(BMI_all_2$analysis, 
+                          levels = c( "tsls_gen_pop", 
+                                     "tsls_females",
+                                     "tsls_males",
+                                     "obs_gen_pop", 
+                                     "obs_females",
+                                     "obs_males"
+                                    
+                                     )[6:1] )
+```
+
+
+
+```{r, fig.width = 12, fig.height = 20}
+library(ggforestplot)
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Set1")
+
+pcol = c(x[1:3], "black", "grey50","grey80" )[6:1]
+
+```
+
+
+### limit to only the MR associations
+
+```{r}
+x = Table2 |> pull(MR_outcome)
+f = female_MR_associations |> pull(MR_outcome)
+m = male_MR_associations |> pull(MR_outcome)
+a = unique(c(x,f,m))
+
+length(a)
+
+BMI_all_3 = BMI_all_2 |> filter(outcome %in% a)
+
+length(unique(BMI_all_3$outcome))
+```
+
+
+
+```{r, fig.width = 20, fig.height = 17}
+
+w = grep(" | ", BMI_all_3$outcome)
+
+##
+plot1 = ggforestplot::forestplot(
+  df = BMI_all_3[-w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "AB & PA traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis
+) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+
+plot2 = ggforestplot::forestplot(
+  df = BMI_all_3[w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "RA traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis
+) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+library(patchwork)
+plot1 | plot2
+```
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_assoc_genpop_and_sex_specific_forestplot_20241206.pdf")
+pdf(file = f, height = 20, width = 20)
+plot1 | plot2
+dev.off()
+```
+
+
+
+
+```{r, fig.width = 25, fig.height = 12}
+w = grep(" | ", BMI_all_3$outcome)
+
+##
+plot1 = ggforestplot::forestplot(
+  df = BMI_all_3[-w,] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "AB & PA traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis
+) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+q = which(BMI_all_3$phylum[w] == "Firmicutes | Firmicutes")
+
+plot2 = ggforestplot::forestplot(
+  df = BMI_all_3[w[-q],] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "RA traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis
+) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+plot3 = ggforestplot::forestplot(
+  df = BMI_all_3[w[q],] ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/33,
+  title = "RA traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis
+) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+
+
+library(patchwork)
+plot1 | plot2 | plot3
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_assoc_genpop_and_sex_specific_forestplot_20241206_v2.pdf")
+pdf(file = f, height = 12, width = 25)
+plot1 | plot2 | plot3
+dev.off()
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_assoc_genpop_and_sex_specific_forestplot_20241206_v3.pdf")
+pdf(file = f, height = 12, width = 25)
+plot1 + theme(legend.position="none") | plot2 + theme(legend.position="none") | plot3 + theme(legend.position="none")
+dev.off()
+
+
+
+```
+
+
+
+
+### Looking specifically at phyla Firmicutes and Bacteroidetes
+
+```{r}
+Derived_Estimates$BMI |> 
+  filter(MR_outcome %in% c("P_Firmicutes_1_AB",  "P_Bacteroidetes_1_AB", "P_Bacteroidetes | P_Firmicutes",
+                           "G_Roseburia_0.988_AB")) |>
+  dplyr::select( MR_outcome, MR_n, Phylum, phylum_ratio, trait_type3,   
+                 oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+
+```{r}
+Derived_Estimates$BMI |> 
+  filter(trait_type3 == "RA") |>
+  dplyr::select( MR_outcome, MR_n, Phylum, phylum_ratio, trait_type3,   
+                 oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+```{r}
+Derived_Estimates$BMI |> 
+  filter( trait_type3 == "AB"  & Phylum == "Bacteroidetes") |>
+  dplyr::select( MR_outcome, MR_n, Phylum, phylum_ratio, trait_type3,   
+                 oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+### Firmicutes observational AB traits
+
+```{r}
+Derived_Estimates$BMI |> 
+  filter(MR_outcome %in% primary_traits & oe_P < 0.05/33 & trait_type3 == "AB" 
+         # & oe_beta > 0 
+         & Phylum == "Firmicutes") |>
+  arrange(oe_beta) |>
+  dplyr::select( MR_outcome, MR_n, Phylum, phylum_ratio, trait_type3,   
+                 oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+```{r}
+## Firmicutes genera level Abundance
+Fnames = taxonomy |> filter(Phylum == "Firmicutes" & trait_type == "abundance") |> pull(trait_name)
+w = which(sapply(Fnames, function(x){substr(x, 1,1)}) == "G")
+Fnames = Fnames[w]
+
+Fcount = apply(mydata[, Fnames], 1, sum) 
+Fper = Fcount / 10000 
+mean(Fper)
+quantile(Fper, probs = c(0.025, 0.50, 0.975))
+```
+
+## What proportion of Firmicutes is Roseburia ?
+
+```{r}
+Rper = mydata$G_Roseburia_0.988_AB / Fcount
+mean(Rper)
+quantile(Rper, probs = c(0.025, 0.50, 0.975))
+```
+
+```{r}
+Fnames2 = c("G_Sporobacter_0.879_AB","G_unclassified_O_Clostridiales_0.955_AB","G_unclassified_P_Firmicutes_0.856_AB")
+Fcount2 = apply(mydata[, Fnames2], 1, sum) 
+x = Fcount2 / Fcount
+mean(x)
+quantile(x, probs = c(0.025, 0.50, 0.975))
+```
+
+
+### Bacteroidetes observational AB traits
+
+```{r}
+Derived_Estimates$BMI |> 
+  filter(MR_outcome %in% primary_traits & oe_P < 0.05/33 & trait_type3 == "AB" 
+         # & oe_beta > 0 
+         & Phylum == "Bacteroidetes") |>
+  arrange(oe_beta) |>
+  dplyr::select( MR_outcome, MR_n, Phylum, phylum_ratio, trait_type3,   
+                 oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P) |> 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+
+## Bar plot of Firmicutes and Bacteroidetes mean abundance by BMI category
+
+```{r, fig.width = 5, fiheight = 2.5}
+
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Bacteroides = mean(G_Bacteroides_1_AB),
+            Barnesiella = mean(G_Barnesiella_0.865_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Bacteroides","Barnesiella"), values_to = "mean_ab", names_to = "phylum", )
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = phylum)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Set1")
+```
+
+# MR Results
+
+## RATIO RESULTS
+
+### Correlation Matrix
+
+```{r, fig.widht = 15, fig.height = 15}
+## The MT names for associated RA, as found in mydata colnames
+all_associated_RA_MTs = rownames( Table2 |> filter(trait_type3 == "RA") )
+
+Cmat = cor(mydata[, all_associated_RA_MTs], method = "spearman", use = "pairwise.complete.obs")
+
+## Replace MT names
+m = match(rownames(Cmat), rownames(Table2))
+rownames(Cmat) = Table2$MR_outcome[m]
+colnames(Cmat) = Table2$MR_outcome[m]
+
+corrplot::corrplot(Cmat, method = "square", order = "hclust", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 45, 
+                   type = 'full', cl.pos = 'b',
+                   addrect = 10, rect.col = 'red', rect.lwd = 3)
+
+
+```
+
+### Save RA MTs causally influenced by BMI CorPlot to file
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_RA_MT_corplot_20241207.pdf")
+pdf(file = f, height = 18, width = 22)
+
+corrplot::corrplot(Cmat, method = "square", order = "hclust", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 60, 
+                   type = 'full', cl.pos = 'b',
+                   addrect = 10, rect.col = 'red', rect.lwd = 3)
+
+dev.off()
+```
+
+
+## Build Figure 7
+
+
+### What are the traits invovled in the ratios that are assocatied with BMI and plotted above?
+
+```{r}
+## The MT names of the raw trait used to build the ratios
+a = Table2 |> filter(trait_type3 == "RA") |> pull(taxa1)
+b = Table2 |> filter(trait_type3 == "RA") |> pull(taxa2)
+all_associated_RA_taxa = unique(c(a,b))
+```
+
+
+
+### Build a correlation matrix with the MTs in 'mymts'
+
+```{r, fig.width = 17, fig.height = 15}
+Cmat2 = cor( study_data$micro_data[, all_associated_RA_taxa], 
+             method = "spearman", use = "pairwise.complete.obs")
+
+n = hclust( as.dist( 1 - Cmat2 ), method = "complete" )
+n = n$labels[n$order]
+
+Cmat2 = Cmat2[n,n]
+
+pmat = Cmat2
+pmat[ abs(pmat)>=0.2 & abs(pmat)<0.9  ] = 0
+pmat[pmat!=0] = 1
+
+corrplot::corrplot(Cmat2, method = "circle", 
+                   order = "original", diag = TRUE, 
+                   tl.col = 'grey30', tl.srt = 60, 
+                   addCoef.col ='black', number.cex = 1, 
+                   p.mat = pmat, insig='blank',
+                   # addrect = 6, rect.col = 'red', rect.lwd = 3,
+                   type = 'full', cl.pos = 'b',
+                   col = corrplot::COL2('RdBu', 20))$corrPos -> p1
+
+#text(p1$x, p1$y, round(p1$corr,d =2) )
+```
+
+
+```{r,fig.width = 17, fig.height = 15}
+corrplot::corrplot(Cmat2, method = "circle", 
+                   order = "original", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 60, 
+                   addCoef.col ='black', number.cex = 1, 
+                   p.mat = pmat, insig='blank',
+                   #addrect = 6, rect.col = 'red', rect.lwd = 3,
+                   type = 'lower', cl.pos = 'b',
+                   col = corrplot::COL2('RdBu', 20))$corrPos -> p1
+
+#text(p1$x, p1$y, round(p1$corr,d =2) )
+```
+
+
+
+
+```{r, fig.width = 17, fig.height = 15}
+f = paste0(project_results_dir, "figures/Ratio_corrplot_lower_tri_20241207.pdf")
+pdf(file = f, width = 17, height = 17)
+
+corrplot::corrplot(Cmat2, method = "circle", 
+                   order = "original", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 60, 
+                   addCoef.col ='black', number.cex = 1, 
+                   p.mat = pmat, insig='blank',
+                   # addrect = 6, rect.col = 'red', rect.lwd = 3,
+                   type = 'lower', cl.pos = 'b',
+                   col = corrplot::COL2('RdBu', 20))
+
+dev.off()
+```
+
+
+```{r, fig.width = 17, fig.height = 15}
+f = paste0(project_results_dir, "figures/Ratio_corrplot_lower_tri_nolabels_20241207.pdf")
+pdf(file = f, width = 17, height = 17)
+
+corrplot::corrplot(Cmat2, method = "circle", 
+                   order = "original", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 60, 
+                   addCoef.col ='black', number.cex = 1, 
+                   p.mat = pmat, insig='blank',
+                   # addrect = 6, rect.col = 'red', rect.lwd = 3,
+                   type = 'lower', cl.pos = 'b',
+                   col = corrplot::COL2('RdBu', 20), tl.pos = "n")
+
+
+dev.off()
+```
+
+## Now let's add the MR BMI effect estimates to the upper part of the matrix. 
+
+  - such that we will have:
+    1. Spearman correlation coefficents between the two traits on the bottom
+    2. MR BMI effect estimates on the top
+    
+```{r}
+## A Beta matrix
+Bmat = Cmat2
+BmatP = Cmat2
+nmts = rownames(Bmat)
+
+## We want to extract estimates from all run traits not just the primary traits
+# d = Table2 |> filter(trait_type3 == "RA")
+d = Derived_Estimates$BMI |> filter(trait_type3 == "RA")
+
+for(a in 1:nrow(Bmat) ){
+  i = nmts[a]
+  for(b in 1:nrow(Bmat)){
+    j = nmts[b]
+    ##
+    w = which(d$taxa1 == i & d$taxa2 == j )
+    if(length(w) == 1){
+      Bmat[a,b] = d$MR_beta[w]
+      BmatP[a,b] = d$MR_P[w]
+    } else {
+      w = which(d$taxa1 == j & d$taxa2 == i )
+      if(length(w) == 1){
+        Bmat[a,b] = d$MR_beta[w] * -1 
+        BmatP[a,b] = d$MR_P[w]
+        } else { 
+          Bmat[a,b] = 0
+          BmatP[a,b] = 0
+        }
+    }
+  }
+}
+
+```
+
+
+
+
+## now do a geom tile plot
+
+```{r, fig.width = 17, fig.height = 15}
+p1 = corrplot::corrplot(Bmat, method = "circle", 
+                        order = "original", diag = FALSE, 
+                        tl.col = 'grey30', tl.srt = 30, 
+                        cl.pos = 'r', is.corr = FALSE,
+                        type = "upper",
+                        col = corrplot::COL2('PRGn', 10))$corrPos
+
+## edit 
+# sigT = Table2 |> as_tibble() |>
+#   filter(trait_type3 == "RA") |> 
+#   select(MR_outcome, taxa1, taxa2, phylum2, phylum2)
+
+p1$beta = NA
+p1$pval = NA
+for(i in 1:nrow(p1)){
+  x = p1$xName[i]
+  y = p1$yName[i]
+  p1$beta[i] = Bmat[y,x]
+  p1$pval[i] = BmatP[y,x]
+}  
+  
+
+p1 = p1 |> mutate(sig = ifelse(pval <= 0.05/33 & pval != 0, beta , "" ) )
+
+
+
+```
+
+
+```{r, fig.width = 17, fig.height = 17}
+f = paste0(project_results_dir, "figures/Ratio_corrplot_upper_tri_20241207.pdf")
+pdf(file = f, width = 17, height = 17)
+
+corrplot::corrplot(Bmat, method = "circle", order = "original", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 30, 
+                   cl.pos = 'r', is.corr = FALSE,
+                   type = "upper",
+                   col = corrplot::COL2('PRGn', 10) )
+
+text(p1$x, p1$y, round( as.numeric(p1$sig), d = 2), col = "white" )
+
+
+dev.off()
+```
+
+
+```{r, fig.width = 17, fig.height = 17}
+f = paste0(project_results_dir, "figures/Ratio_corrplot_upper_tri_nolabels_20241207.pdf")
+pdf(file = f, width = 17, height = 17)
+
+corrplot::corrplot(Bmat, method = "circle", order = "original", diag = FALSE, 
+                   tl.col = 'grey30', tl.srt = 30, 
+                   cl.pos = 'r', is.corr = FALSE,
+                   type = "upper",
+                   col = corrplot::COL2('PRGn', 10), tl.pos = "n")
+
+text(p1$x, p1$y, round( as.numeric(p1$sig), d = 2), col = "white" )
+
+dev.off()
+```
+
+
+
+```{r}
+Table2 |> as_tibble() |> filter(trait_type2 == "RA") |> 
+  select(taxa1, taxa2, phylum1, phylum2) |> knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+
+## Figure 3 Composite plot
+
+
+## A bar plot of all phylum level diversity by BMI class
+
+```{r}
+FB = mydata |> dplyr::select(bmi_cat, 
+                             P_Firmicutes_1_AB, P_Bacteroidetes_1_AB, 
+                             P_Proteobacteria_0.996_AB, P_Actinobacteria_1_AB,
+                             P_Verrucomicrobia_0.67_trunc_AB,
+                             P_unclassified_K_Bacteria_0.798_trunc_AB ) |>
+  group_by(bmi_cat) |>
+  summarise_if(is.numeric, mean, na.rm = TRUE)
+
+FB_long = FB |> pivot_longer(cols = !bmi_cat, values_to = "mean_ab", names_to = "phylum", )
+FB_long$PercentComp = FB_long$mean_ab / 10000
+FB_long$phylum = factor(FB_long$phylum, levels = c("P_Firmicutes_1_AB",
+                                                   "P_Bacteroidetes_1_AB",
+                                                   "P_Proteobacteria_0.996_AB",
+                                                   "P_Actinobacteria_1_AB",
+                                                   "P_Verrucomicrobia_0.67_trunc_AB", 
+                                                   "P_unclassified_K_Bacteria_0.798_trunc_AB")[6:1] )
+pcol = RColorBrewer::brewer.pal(8, "Dark2")
+
+(phy_bar = FB_long |> ggplot(aes(x = bmi_cat, y = PercentComp, fill = phylum)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_manual(values =  pcol[ c(6,4,1,5,2,3) ] ) +
+    labs(x = "BMI category", y = "proportional composition") +
+  theme_bw() # + theme(legend.position="bottom") 
+)
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/Phylum_bar_plot_by_BMIcat.pdf")
+pdf(f, width = 7, height = 5)
+phy_bar
+dev.off()
+
+```
+
+
+```{r}
+n = c("MDS1", "Div_Shannon", "Div_NumberGenera",
+      "G_unclassified_K_Bacteria_0.798_AB",
+      "G_unclassified_P_Firmicutes_0.856_AB",
+      "G_unclassified_O_Clostridiales_0.955_AB",
+      "G_Sporobacter_0.879_AB",
+      "F_Porphyromonadaceae_0.994_AB",
+      "G_Barnesiella_0.865_AB"
+      
+       )
+FB = mydata |> dplyr::select(bmi_cat, n )
+
+for(i in 2:ncol(FB)){FB[,i] = rntransform(FB[,i]) }
+ 
+ 
+m = FB |> group_by(bmi_cat) |>
+  summarise_if(is.numeric, median, na.rm = TRUE) |>
+  pivot_longer(cols = !bmi_cat, values_to = "median", names_to = "mt")
+
+l = FB |> group_by(bmi_cat) |>
+  summarise_if(is.numeric, ~quantile(.,probs = 0.25), na.rm = TRUE) |>
+  pivot_longer(cols = !bmi_cat, values_to = "lower", names_to = "mt")
+
+u = FB |> group_by(bmi_cat) |>
+  summarise_if(is.numeric, ~quantile(.,probs = 0.75), na.rm = TRUE) |>
+  pivot_longer(cols = !bmi_cat, values_to = "upper", names_to = "mt")
+
+pd = right_join(m, l , by = c("bmi_cat", "mt"))
+pd = right_join(pd, u , by = c("bmi_cat", "mt"))
+
+m = match(pd$mt, taxonomy$trait_name)
+pd$phylum = taxonomy$Phylum[m]
+
+pd$mt = factor(pd$mt, levels = n)
+
+```
+
+
+```{r, fig.width = 14, fig.height = 7}
+(mt_dot = pd |>
+  ggplot(aes(x = bmi_cat, y = median, group = 1)) +
+  geom_line(aes(color = phylum)) +
+  geom_point(size = 6, aes(color = phylum)) +
+  geom_errorbar( aes(ymin=lower, ymax=upper, color = phylum), width = 0.2) +
+  theme_bw() +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap(~mt, scales = "free", nrow = 2) + 
+  labs(x = "BMI category", y = "ranked relative abundance", fill = "MT") +
+  theme(legend.position="bottom") )
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MT_MRassoc_by_BMIcat_v2.pdf")
+pdf(f, width = 14, height = 7)
+mt_dot
+dev.off()
+```
+
+## MDS1 and Enterotype Bact2
+
+```{r, fig.width = 6, fig.height = 5}
+(mds_entero = mydata %>% ggplot(aes( x = MDS1,  y = MDS2 )) +
+  geom_point(shape = 21, size = 3.5, alpha = 0.8,  aes( fill = EnterotypeClass) ) +
+  scale_fill_manual(values = RColorBrewer::brewer.pal(4, "Set1") ) + 
+  theme_bw() + 
+   labs(fill = "Enterotype") +
+  theme(legend.position="bottom") )
+  
+```
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MDS_Enterotype_Scatter.pdf")
+pdf(f, width = 8, height = 7)
+mds_entero
+dev.off()
+```
+
+```{r, fig.width = 14, fig.height = 14}
+( phy_bar | mds_entero ) / mt_dot + 
+  plot_layout(widths = c(1.5, 1.5,3), heights = c(1.5, 2.5) ) +
+  plot_annotation(tag_levels = 'A')
+```
+
+
+
+```{r, fig.width = 14, fig.height = 14}
+f = paste0(project_results_dir, "figures/composite.pdf")
+pdf(f, width = 15, height = 11)
+(  phy_bar | mds_entero) / mt_dot + 
+  plot_layout(widths = c(1.5, 1.5,3), heights = c(1.5, 2.5) ) +
+  plot_annotation(tag_levels = 'A')
+dev.off()
+```
+
+
+
+
+
+
+
+## Box plot of ratio traits
+
+## BMI categories
+
+```{r}
+mydata$bmi_cat = "underweight"
+w = which(mydata$BMI>18 & mydata$BMI<=25); mydata$bmi_cat[w] = "healthy"
+w = which(mydata$BMI>25 & mydata$BMI<=30); mydata$bmi_cat[w] = "overweight"
+w = which(mydata$BMI>30 ); mydata$bmi_cat[w] = "obesity"
+mydata$bmi_cat = factor(mydata$bmi_cat, levels = c("underweight","healthy","overweight","obesity"))
+
+# fit = lm( BMI ~ age + sex + pruit_BMI_wGRS_info_hwe_filtered , data = mydata)
+fit = lm( BMI ~  pruit_BMI_wGRS_info_hwe_filtered , data = mydata)
+x = fitted(fit)
+m = match(rownames(mydata), names(x))
+mydata$predictedBMI = x[m]
+
+k = 4
+q = quantile( mydata$predictedBMI, probs = seq(0, 1, 1/k), na.rm = TRUE )
+strata = as.factor( cut(mydata$predictedBMI, 4, include.lowest=TRUE, labels=FALSE) )
+mydata$predictedBMI_cat = strata
+```
+
+
+
+## Bar plot of Firmicutes and Bacteroidetes mean abundance by BMI category
+
+```{r}
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Firmicutes = mean(P_Firmicutes_1_AB),
+            Bacteroidetes = mean(P_Bacteroidetes_1_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Firmicutes","Bacteroidetes"), values_to = "mean_ab", names_to = "phylum", )
+
+pcol = RColorBrewer::brewer.pal(8, "Dark2")
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = phylum)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_manual(values =  pcol[2:3] ) 
+```
+
+```{r}
+FB = mydata |> 
+  group_by(bmi_cat) |>
+  summarize(Firmicutes = mean(G_Roseburia_0.988_AB),
+            Bacteroidetes = mean(G_Sporobacter_0.879_AB) )
+
+FB_long = FB |> pivot_longer(cols = c("Firmicutes","Bacteroidetes"), values_to = "mean_ab", names_to = "phylum", )
+
+FB_long |> ggplot(aes(x = bmi_cat, y = mean_ab, fill = phylum)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_manual(values =  pcol[2:3] ) 
+```
+
+
+```{r}
+table(mydata$bmi_cat)
+```
+
+
+```{r}
+mydata |> ggplot(aes(x = bmi_cat, y = rntransform(G_Roseburia_0.988_AB)  ) ) + geom_violin() + 
+  geom_boxplot(width=0.25) + 
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+mydata |> ggplot(aes(x = bmi_cat, y = rntransform(G_Sporobacter_0.879_AB)  ) ) + 
+  geom_violin(fill = "skyblue") + 
+  geom_boxplot(width=0.25) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "green", size = 2) +
+  theme_bw()
+  
+  
+```
+
+
+```{r}
+
+fit = lm()
+```
+
+
+
+```{r}
+d = mydata[, c("bmi_cat", "G_Roseburia_0.988_AB", "F_Porphyromonadaceae_0.994_AB")]
+d = d |> mutate(ratio = F_Porphyromonadaceae_0.994_AB /G_Roseburia_0.988_AB, 
+                rnt =  rntransform(ratio) )
+
+
+dlong = d |> as.tibble() |>  dplyr::select(!(ratio:rnt)) |> pivot_longer( !bmi_cat, names_to = "mt", values_to = "ab" )
+
+pcol = RColorBrewer::brewer.pal(8, "Dark2")
+  
+dlong %>% ggplot(aes(x = bmi_cat, y = ab, fill = mt)) +
+  geom_boxplot() +
+  scale_fill_manual(values =  pcol[2:3] ) +
+  theme_bw() +
+  labs(x = "BMI category", y = "Phylum: relative counts", fill = "MT" )
+```
+
+
+
+```{r}
+d |> group_by(bmi_cat) |> summarize(med_ratio = median(ratio), 
+                                    med_rnt = mean(rnt), 
+                                    lower = quantile(rnt, probs = 0.25), 
+                                    upper = quantile(rnt, probs = 0.75),) |>
+  ggplot(aes(x = bmi_cat, y = med_rnt, group = 1), size = 4) +
+  geom_line() + geom_point( size = 4) + 
+  geom_errorbar( aes(ymin=lower, ymax=upper), width = 0.2) +
+  theme_bw()
+```
+
+
+
+```{r}
+d |> mutate(sum = G_Roseburia_0.988_AB + F_Porphyromonadaceae_0.994_AB ) |>
+  group_by(bmi_cat) |>
+  summarise( total = median(sum), 
+             bact = median(G_Roseburia_0.988_AB),
+             porph = median(F_Porphyromonadaceae_0.994_AB),
+             ratio = median(ratio),
+             rnt = mean(rnt)) 
+```
+
+
+```{r}
+d |> mutate(sum = G_Roseburia_0.988_AB + F_Porphyromonadaceae_0.994_AB ) |>
+  group_by(bmi_cat) |>
+  summarise( total = median(sum), 
+             rose = median(G_Roseburia_0.988_AB),
+             porph = median(F_Porphyromonadaceae_0.994_AB),
+             ratio = median(ratio),
+             rnt = mean(rnt)) |>
+  # mutate( rose = scale(rose, center = TRUE, scale = FALSE),
+  #        porph = scale(porph, center = TRUE, scale = FALSE)) |>
+  dplyr::select(bmi_cat, rose, porph) |>
+  pivot_longer(cols= !bmi_cat, values_to = "rel_ab", names_to = "mt") |>
+  ggplot(aes(x = bmi_cat, y = rel_ab, color = mt)) +
+  geom_line( aes(group = mt) ,size = 1.5) + 
+  geom_point(size = 4) +
+  theme_bw()
+  
+```
+
+
+```{r}
+d |> group_by(bmi_cat) |> summarize( Bact = median(G_Roseburia_0.988_AB) , Porphy = median(F_Porphyromonadaceae_0.994_AB) ) |>
+  mutate(Bact_z = ztransform(Bact),
+         Porphy_z = ztransform(Porphy)) |>
+  dplyr::select(bmi_cat, Bact_z, Porphy_z) |>
+  pivot_longer(cols= !bmi_cat, values_to = "rel_ab", names_to = "mt") |>
+  ggplot(aes(x = bmi_cat, y = rel_ab, color = mt)) +
+  geom_line( aes(group = mt) ,size = 1.5) + 
+  geom_point(size = 4) +
+  theme_bw()
+```
+
+
+```{r}
+z |> ggplot(aes(x = oe_beta, y = MR_beta)) + 
+  geom_point(aes(color = trait_type2), size = 3) + 
+  geom_smooth(method = lm) + 
+  theme_bw() + 
+  geom_vline(xintercept = 0) + 
+  geom_hline(yintercept = 0)
+```
+
+
+```{r}
+#### difference between point estimates
+z = t( sapply(1:nrow(temp), function(i){
+  ztest(beta1 = temp$oe_beta[i], se1 = temp$oe_se[i], beta2 = temp$MR_beta[i] , se2 = temp$MR_se[i] )  
+}) )
+
+####
+temp$ztest_P = z[,2]
+w = which( z[,2]< 0.05 )
+# q = which( z[,2]< 0.05/44 )
+temp$sig_dif = "null"
+temp$sig_dif[w] = "P<0.05"
+#temp$sig_dif[q] = "P<0.05/44"
+# temp$sig_dif = factor(temp$sig_dif, levels = c( "null", "P<0.05", "P<0.05/44" ) )
+temp$sig_dif = factor(temp$sig_dif, levels = c( "null", "P<0.05" ) )
+temp$sig_dif = as.factor(temp$sig_dif)
+
+```
+
+
+## Define Association Classes
+
+```{r}
+temp$association_class = "null"
+
+w = which(temp$oe_P > 0.05/36 & temp$MR_P > 0.05/36 & temp$ztest_P < 0.05)
+if(length(w)>0){ temp$association_class[w] = "diff.est." }
+
+w = which(temp$oe_P < 0.05/36 & temp$MR_P > 0.05/36)
+if(length(w)>0){ temp$association_class[w] = "obs" }
+
+w = which(temp$oe_P > 0.05/36 & temp$MR_P < 0.05/36)
+if(length(w)>0){ temp$association_class[w] = "MR" }
+
+w = which(temp$oe_P < 0.05/36 & temp$MR_P < 0.05/36)
+if(length(w)>0){ temp$association_class[w] = "obs & MR" }
+
+w = which(temp$oe_P < 0.05/36 & temp$MR_P > 0.05/36 & temp$ztest_P < 0.05)
+if(length(w)>0){ temp$association_class[w] = "obs w/diff.est." }
+
+w = which(temp$oe_P > 0.05/36 & temp$MR_P < 0.05/36 & temp$ztest_P < 0.05)
+if(length(w)>0){ temp$association_class[w] = "MR w/diff.est." }
+
+w = which(temp$oe_P < 0.05/36 & temp$MR_P < 0.05/36 & temp$ztest_P < 0.05)
+if(length(w)>0){ temp$association_class[w] = "obs & MR w/diff.est." }
+
+temp$association_class = factor(temp$association_class, levels = c( "null","diff.est.",
+                                                                    "obs", "obs w/diff.est.",
+                                                                    "MR", 
+                                                                    "MR w/diff.est.",
+                                                                    "obs & MR",
+                                                                    "obs & MR w/diff.est.") )
+
+temp$association_class = factor(temp$association_class, levels = c( "null", "diff.est.",
+                                                                    "obs", "MR", "obs & MR",
+                                                                    "MR w/diff.est." ,
+                                                                    "obs & MR w/diff.est."
+                                                                    ) )
+
+table(temp$association_class)
+```
+
+
+## Define Association Classes 2
+
+```{r}
+temp = Derived_Estimates$BMI %>% 
+  filter(MR_outcome %in% primary_traits)
+
+temp$association_class2 = "null"
+
+w = which(temp$oe_P < 0.05/36 & temp$MR_P > 0.05/36)
+if(length(w)>0){ temp$association_class2[w] = "obs" }
+
+w = which(temp$oe_P > 0.05/36 & temp$MR_P < 0.05/36)
+if(length(w)>0){ temp$association_class2[w] = "MR" }
+
+w = which(temp$oe_P < 0.05/36 & temp$MR_P < 0.05/36)
+if(length(w)>0){ temp$association_class2[w] = "obs & MR" }
+
+
+temp$association_class2 = factor(temp$association_class2, levels = c( "null",
+                                                                      "obs & MR",
+                                                                      "obs", 
+                                                                      "MR" ) )
+
+table(temp$association_class2)
+
+```
+
+
+```{r}
+## edit RA names
+m = match(temp$MR_outcome, taxonomy$trait_name)
+temp$MR_outcome = taxonomy$new_trait_name[m]
+temp$MR_outcome = gsub("\\|"," | ",temp$MR_outcome)
+temp$MR_outcome = gsub("_RA","",temp$MR_outcome)
+```
+
+
+## Sum Stats for plot obf obs on MR
+
+```{r}
+## AB Pearson's correlation
+w = which(temp$trait_type2 == "AB")
+x = cor.test(temp$oe_beta[w], temp$MR_beta[w])
+ab_Pearson_r = c(x$estimate, x$p.value)
+ab_Pearson_r = paste0("Pearson's r = ", round(ab_Pearson_r[1],2), "\np = ", formatC(ab_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$MR_beta[w] ~ temp$oe_beta[w])
+AB_slope = summary(fit)$coef[2,1]
+
+## PA Pearson's correlation
+w = which(temp$trait_type2 == "PA")
+x = cor.test(temp$oe_beta[w], temp$MR_beta[w])
+pa_Pearson_r = c(x$estimate, x$p.value)
+pa_Pearson_r = paste0("Pearson's r = ", round(pa_Pearson_r[1],2), "\np = ", formatC(pa_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$MR_beta[w] ~ temp$oe_beta[w])
+PA_slope = summary(fit)$coef[2,1]
+
+
+## RA Pearson's correlation
+w = which(temp$trait_type2 == "RA")
+x = cor.test(temp$oe_beta[w], temp$MR_beta[w])
+ra_Pearson_r = c(x$estimate, x$p.value)
+ra_Pearson_r = paste0("Pearson's r = ", round(ra_Pearson_r[1],2), "\np = ", formatC(ra_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$MR_beta[w] ~ temp$oe_beta[w])
+RA_slope = summary(fit)$coef[2,1]
+
+
+## ANNOTATION TEXT
+ann_text = data.frame(label = c(ab_Pearson_r, ra_Pearson_r, pa_Pearson_r ),
+                      trait_type2 = c("AB","RA", "PA"), 
+                      x = c(0.02, 0.04, 0.04 ), 
+                      y = c(-0.105, -0.09, -0.28) )
+
+
+```
+
+
+```{r, fig.width = 10, fig.height = 12}
+pcol = RColorBrewer::brewer.pal( 9, "Set1")
+pcol = c("grey", pcol[1:3])
+###
+Obs_MR_Scatter = temp %>% ggplot(aes(x = oe_beta, y = MR_beta)) +
+  geom_smooth( method = "lm", formula = y ~ x , color = "blue", size = 1.5) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point( aes( color = association_class2), size = 4, alpha = 1) +
+  scale_color_manual(values = pcol) +
+  scale_shape_manual(values = c(20,17)) +
+  labs(shape = "MR\nassociation", color = "Association status",
+       x = "observational effect estimates", y = "MR effect estimates" ) +
+  facet_wrap(. ~ trait_type2, scales = "free", ncol = 1 ) +
+  geom_text( data = ann_text,
+             mapping = aes(x = x, y = y, label = label) ) +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  ggrepel::geom_text_repel( data = temp %>% filter( grepl("MR", association_class2)  ) , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.15, 
+                  nudge_y = 0.005, nudge_x = 0.005, size = 2.5) +
+  
+  guides(shape = guide_legend(override.aes = list(size=c(5,3)))) +
+  guides(color = guide_legend(override.aes = list(size=5))) +
+  theme(legend.text=element_text(size=10))
+
+Obs_MR_Scatter
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_Obs_betas_scatterplot_v9.pdf")
+pdf(f, width = 9, height = 15)
+Obs_MR_Scatter
+dev.off()
+
+```
+
+```{r}
+t.test(temp$oe_beta, temp$MR_beta, paired = TRUE)
+```
+
+
+## MR Volcano Plot
+
+```{r}
+## Add a column to declare significance
+Derived_Estimates$BMI = Derived_Estimates$BMI %>% mutate(sig = ifelse(MR_P < 0.05/36, "sig", "not sig" ) )
+
+Derived_Estimates$BMI = Derived_Estimates$BMI %>% mutate(tt2 = trait_type) 
+w = which(Derived_Estimates$BMI$tt2 == "Div"); Derived_Estimates$BMI$tt2[w] = "AB"
+# w = which(Derived_Estimates$BMI$tt2 == "RA"); Derived_Estimates$BMI$tt2[w] = "AB"
+w = which(Derived_Estimates$BMI$tt2 == "Entero"); Derived_Estimates$BMI$tt2[w] = "PA"
+
+Derived_Estimates$BMI$tt2 = factor(Derived_Estimates$BMI$tt2, levels = c("AB","RA","PA") )
+```
+
+
+```{r, fig.width = 10, fig.height = 6}
+MR_Volcano = Derived_Estimates$BMI %>% 
+  filter(MR_outcome %in% primary_traits) %>% 
+  ggplot(aes(y = -log10(MR_P), x = MR_beta )) +
+  # geom_point(aes(color = trait_type2, shape = sig), size = 4) +
+  geom_point(aes(color = tt2, shape = sig), size = 4) +
+  geom_hline(yintercept = -log10(0.05/36), linetype = "dashed", color = "grey50", size = 1.5) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = c(1, 19)) +
+  theme_bw() + 
+  theme(legend.position="bottom") +
+  labs(x = "effect estimate", y = "-log10 P-value", color = "MT type", shape = "significance") + 
+  ggrepel::geom_text_repel( data = Derived_Estimates$BMI %>% filter( MR_beta < 0 & MR_outcome %in% primary_traits & sig == "sig") , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.45, 
+                  nudge_x = -0.05, size = 3) +
+  ggrepel::geom_text_repel( data = Derived_Estimates$BMI %>% filter( MR_beta > 0 & MR_outcome %in% primary_traits & sig == "sig") , 
+                  aes(label=MR_outcome), 
+                  min.segment.length = 0,
+                  box.padding = 0.15, 
+                  #label.padding = 0.35, 
+                  nudge_x = 0, size = 3)
+
+MR_Volcano
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_volcano_v6.pdf")
+f = paste0("Downloads/MR_volcano_v6.pdf")
+pdf(f, width = 8, height = 6)
+MR_Volcano
+dev.off()
+
+```
+
+
+```{r, fig.width = 15, fig.height = 12}
+library(patchwork)
+
+fig1 = MR_Volcano + Obs_MR_Scatter +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(width = c(1, 1.25) )
+
+fig1
+```
+
+```{r}
+f = paste0(project_results_dir, "figures/Fig3_AandB_v4.pdf")
+pdf(f, width = 15, height = 12)
+fig1
+dev.off()
+
+```
+
+
+```{r}
+Derived_Estimates$BMI |> as.tibble() |>
+  filter(MR_outcome %in% c( "P_Firmicutes_1_AB", "P_Bacteroidetes_1_AB", "P_Bacteroidetes_P_Firmicutes_RA") ) |>
+  dplyr::select(MR_outcome, oe_beta, oe_se, oe_P, MR_beta, MR_se, MR_P) |>
+  knitr::kable() |> kableExtra::kable_classic()
+```
+
+
+
+
+
+# BMI MTs causally associated with BMI in females
+
+```{r}
+m = match(Derived_Estimates$BMI_females$MR_outcome, taxonomy$outcome)
+Derived_Estimates$BMI_females$phylum = taxonomy$Phylum[m]
+###
+female_MR_associations = Derived_Estimates$BMI_females %>% filter(MR_outcome %in% primary_traits & MR_P < 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( Phylum, trait_type3,   
+                 MR_beta, MR_se, MR_P, MR_Wald_F, MR_dhat_r2,
+                 Wu_Hausman_stat, Wu_Hausman_P, oe_beta, oe_se, oe_P)
+  
+  
+female_MR_associations %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## female associations NOT observed in the general population
+
+```{r}
+female_MR_associations[!rownames( female_MR_associations ) %in% rownames( MR_associations ),] %>% 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+# BMI MTs causally associated with BMI in males
+
+```{r}
+m = match(Derived_Estimates$BMI_males$MR_outcome, taxonomy$outcome)
+Derived_Estimates$BMI_males$phylum = taxonomy$Phylum[m]
+###
+male_MR_associations = Derived_Estimates$BMI_males %>% filter(MR_outcome %in% primary_traits & MR_P < 0.05/36) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( phylum, trait_type,   
+                 MR_beta, MR_se, MR_P, MR_Wald_F, MR_dhat_r2,
+                 Wu_Hausman_stat, Wu_Hausman_P)
+  
+  
+male_MR_associations %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## Comparing male and female MR estimates
+
+```{r}
+temp = data.frame( outcome = Derived_Estimates$BMI_females$MR_outcome,
+                   female = Derived_Estimates$BMI_females$MR_beta,
+                   female_se = Derived_Estimates$BMI_females$MR_se,
+                   female_P = Derived_Estimates$BMI_females$MR_P,
+                   male = Derived_Estimates$BMI_males$MR_beta,
+                   male_se = Derived_Estimates$BMI_males$MR_se,
+                   male_P = Derived_Estimates$BMI_males$MR_P, 
+                   trait_type = Derived_Estimates$BMI_females$trait_type )
+temp = temp %>% filter(outcome %in% primary_traits)
+
+## for the plot place enterotype into PA and diversity into AB
+w = which( temp$trait_type == "Div"); temp$trait_type[w]="AB"
+w = which( temp$trait_type == "Entero"); temp$trait_type[w]="PA"
+
+
+temp$trait_type = as.factor(temp$trait_type)
+
+temp = temp %>% filter(outcome %in% primary_traits)
+
+PearsonR = cor.test(temp$female, temp$male)$estimate
+PearsonR = formatC(PearsonR, digits = 3)
+
+
+#### difference between point estimates
+z = t( sapply(1:nrow(temp), function(i){
+  ztest(beta1 = temp[i,2], se1 = temp[i,3] , beta2 = temp[i,5] , se2 = temp[i,6] )  
+}) )
+temp$ztest_P = z[,2]
+w = which( z[,2]< 0.05 )
+q = which( z[,2]< 0.05/36 )
+temp$sig_dif = "P>0.05"
+temp$sig_dif[w] = "P<0.05"
+temp$sig_dif[q] = "P<0.05/36"
+temp$sig_dif = factor(temp$sig_dif, levels = c("P<0.05/36", "P<0.05" ,"P>0.05" ) )
+temp$sig_dif = as.factor(temp$sig_dif)
+
+```
+
+## are female estimates on average larger than male estimates ?
+
+```{r}
+t.test(temp$female, temp$male, paired = TRUE)
+```
+
+
+## Define a variable to provide a significance class
+
+```{r}
+temp$sig_class = "null"
+## FEMALES
+w = which(temp$female_P < 0.05/36 )
+temp$sig_class[w] = "females"
+## MALES
+w = which( temp$male_P < 0.05/36)
+temp$sig_class[w] = "males"
+## BOTH
+w = which(temp$female_P < 0.05/36 & temp$male_P < 0.05/36)
+temp$sig_class[w] = "both"
+## BOTH But with different estimates
+w = which(temp$female_P < 0.05/36 & temp$male_P < 0.05/36 & temp$ztest_P < 0.05)
+temp$sig_class[w] = "both w/dif.est."
+## FEMALES ONLY with different in estimates
+w = which(temp$female_P < 0.05/36 & temp$male_P > 0.05/36 & temp$ztest_P < 0.05)
+temp$sig_class[w] = "females w/dif.est."
+## MALES ONLY with different in estimates
+w = which(temp$female_P > 0.05/36 & temp$male_P < 0.05/36 & temp$ztest_P < 0.05)
+temp$sig_class[w] = "males w/dif.est."
+### Set as factor
+temp$sig_class = as.factor(temp$sig_class)
+### Set factor levels
+# temp$sig_class = factor(temp$sig_class, levels = c("null",
+#                                                    "both", "both w/dif.est.",
+#                                                    "females","females w/dif.est.",
+#                                                    "males","males w/dif.est."))
+
+temp$sig_class = factor(temp$sig_class, levels = c("null",
+                                                   "females","females w/dif.est."))
+
+
+
+table(temp$sig_class)
+
+```
+
+## edit outcome names
+
+```{r}
+z = sapply(temp$outcome, function(x){ strsplit(x, split = "_0")[[1]][1] })
+temp$outcome_edit = z
+```
+
+## Sum Stats for plot obf obs on MR
+
+```{r}
+## AB Pearson's correlation
+w = which(temp$trait_type == "AB")
+x = cor.test(temp$male[w], temp$female[w])
+ab_Pearson_r = c(x$estimate, x$p.value)
+ab_Pearson_r = paste0("Pearson's r = ", round(ab_Pearson_r[1],2), "\np = ", formatC(ab_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$male[w] ~ temp$female[w])
+AB_slope = summary(fit)$coef[2,1]
+
+## RA Pearson's correlation
+w = which(temp$trait_type == "RA")
+x = cor.test(temp$male[w], temp$female[w])
+ra_Pearson_r = c(x$estimate, x$p.value)
+ra_Pearson_r = paste0("Pearson's r = ", round(ra_Pearson_r[1],2), "\np = ", formatC(ra_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$male[w] ~ temp$female[w])
+RA_slope = summary(fit)$coef[2,1]
+
+## PA Pearson's correlation
+w = which(temp$trait_type == "PA")
+x = cor.test(temp$male[w], temp$female[w])
+pa_Pearson_r = c(x$estimate, x$p.value)
+pa_Pearson_r = paste0("Pearson's r = ", round(pa_Pearson_r[1],2), "\np = ", formatC(pa_Pearson_r[2], digits  = 3) )
+## what is the slope of the regression MR on obs
+fit = lm(temp$male[w] ~ temp$female[w])
+PA_slope = summary(fit)$coef[2,1]
+
+## ANNOTATION TEXT
+ann_text = data.frame(label = c(ab_Pearson_r, ra_Pearson_r, pa_Pearson_r ),
+                      trait_type = c("AB", "RA", "PA"), 
+                      x = c(0.05, 0.1, 0.08 ), 
+                      y = c(-0.08,  -0.075 , -0.2) )
+```
+
+
+## Scatter plot of male and femal estimates
+
+```{r, fig.width = 15, fig.height = 7}
+# pcol = RColorBrewer::brewer.pal( length(unique((temp$sig_class))), "Set1")
+# pcol = c("grey", pcol[-6])
+pcol = RColorBrewer::brewer.pal( 4, "Set1")
+pcol = c("grey", pcol[3:4])
+###
+MR_Male_Female_scatter = temp %>% ggplot(aes(x = female, y = male)) +
+  geom_smooth( method = "lm", formula = y ~ x , color = "blue", size = 1.5) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point( aes(shape = trait_type, color = sig_class ), size = 4, alpha = 1) +
+  # scale_color_continuous(type = "viridis") +
+  # scale_color_brewer(palette = "Set1") +
+  scale_color_manual(values = pcol) +
+  ggrepel::geom_text_repel( data = temp %>% filter( sig_class != "null" & trait_type != "RA") , 
+                  aes(label=outcome_edit), 
+                  min.segment.length = 0.01,
+                  box.padding = 0, 
+                  nudge_x = 0.0, nudge_y = 0, size = 3) +
+  ggrepel::geom_text_repel( data = temp %>% filter( sig_class == "females w/dif.est." & trait_type == "RA") ,
+                  aes(label=outcome_edit),
+                  min.segment.length = 0.02,
+                  box.padding = 0.15,
+                  nudge_x = 0.0, nudge_y = -0.01, size = 3) +
+  ggrepel::geom_text_repel( data = temp %>% filter( sig_class == "females" & trait_type == "RA") ,
+                  aes(label=outcome_edit),
+                  min.segment.length = 0.02,
+                  box.padding = 0.15,
+                  nudge_x = 0.0, nudge_y = 0, size = 3) +
+  labs(color = "Association Class",
+       shape = "MT type", 
+       x = "MR effect estimates for females", 
+       y = "MR effect estimates for males" ) +
+  facet_wrap(~trait_type, scales = "free", ncol = 3 ) +
+  geom_text( data = ann_text,
+             mapping = aes(x = x, y = y, label = label) ) +
+  theme_bw() +
+  theme(legend.position="bottom") 
+
+MR_Male_Female_scatter
+```
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_betas_4_males_females_v3.pdf")
+pdf(f, width = 15, height = 7)
+MR_Male_Female_scatter
+dev.off()
+
+```
+
+
+
+
+
+# RELAXED P-values threshold for an association ( P < 0.05)
+
+## Comparing male and female MR estimates
+
+### Define a variable to provide a significance class
+
+```{r}
+temp$sig_class = "null"
+## FEMALES
+w = which(temp$female_P < 0.05 )
+temp$sig_class[w] = "females; P < 0.05"
+w = which(temp$female_P < 0.05/36 )
+temp$sig_class[w] = "females; P < 0.05/36"
+## MALES
+w = which( temp$male_P < 0.05)
+temp$sig_class[w] = "males; P < 0.05"
+w = which( temp$male_P < 0.05/36)
+temp$sig_class[w] = "males; P < 0.05/36"
+
+## BOTH
+w = which(temp$female_P < 0.05 & temp$male_P < 0.05)
+temp$sig_class[w] = "both; P < 0.05"
+
+w = which(temp$female_P < 0.05/36 & temp$male_P < 0.05/36)
+temp$sig_class[w] = "both; P < 0.05/36"
+
+## Female male
+w = which(temp$female_P < 0.05/36 & temp$male_P < 0.05)
+temp$sig_class[w] = "female_P < 0.05/36\n& male_P < 0.05"
+
+
+temp$sig_class = factor(temp$sig_class, levels = c("null",
+                                                   "females; P < 0.05", "females; P < 0.05/36",
+                                                   "males; P < 0.05", "males; P < 0.05/36",
+                                                   "both; P < 0.05", "both; P < 0.05/36",
+                                                   "female_P < 0.05/36\n& male_P < 0.05") )
+
+table(temp$sig_class)
+
+```
+
+### edit outcome names
+
+```{r}
+z = sapply(temp$outcome, function(x){ strsplit(x, split = "_0")[[1]][1] })
+temp$outcome_edit = z
+```
+
+
+```{r, fig.width = 15, fig.height = 7}
+# pcol = RColorBrewer::brewer.pal( length(unique((temp$sig_class))), "Set1")
+# pcol = c("grey", pcol[-6])
+pcol = RColorBrewer::brewer.pal( 8, "Set1")
+pcol = c("grey", pcol)
+###
+MR_Male_Female_scatter_v2 = temp %>% ggplot(aes(x = female, y = male)) +
+  geom_smooth( method = "lm", formula = y ~ x , color = "blue", size = 1.5) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point( aes(shape = trait_type, color = sig_class ), size = 4, alpha = 1) +
+  # scale_color_continuous(type = "viridis") +
+  # scale_color_brewer(palette = "Set1") +
+  scale_color_manual(values = pcol) +
+  # ggrepel::geom_text_repel( data = temp %>% filter( female_P < 0.05/36 & female < 0 & trait_type != "RA") , 
+  ggrepel::geom_text_repel( data = temp %>% filter( female_P < 0.05/36 & female < 0 ) ,
+                  aes(label=outcome_edit), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.15, 
+                  nudge_x = 0.01, size = 3) +
+  # ggrepel::geom_text_repel( data = temp %>% filter( female_P < 0.05/36 & female > 0 & trait_type != "RA") , 
+  ggrepel::geom_text_repel( data = temp %>% filter( female_P < 0.05/36 & female > 0) , 
+                  aes(label=outcome_edit), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.3, 
+                  nudge_x = -0.01, size = 3) +
+  labs(color = "Association Class", 
+       shape = "MT type", 
+       x = "MR effect estimates for females", 
+       y = "MR effect estimates for males" ) +
+  facet_wrap(~trait_type, scales = "free" ) +
+  theme_bw() +
+  theme(legend.position="bottom") 
+
+MR_Male_Female_scatter_v2
+```
+
+
+```{r,  fig.width = 15, fig.height = 15}
+f = paste0(project_results_dir, "figures/MR_beta_4_Male_Female_v3a.pdf")
+pdf(f, width = 15, height = 7)
+MR_Male_Female_scatter_v2
+dev.off()
+
+```
+
+
+
+
+```{r,  fig.width = 15, fig.height = 15}
+## Obs_Male_Female_scatter comes from step08a_results_summary_observational.R
+f = paste0(project_results_dir, "figures/Scatterplots.pdf")
+pdf(f, width = 15, height = 13)
+Obs_Male_Female_scatter/Obs_MR_Scatter/MR_Male_Female_scatter + plot_annotation( tag_levels = 'A' )
+dev.off()
+
+```
+
+
+
+# Sex Specific PGS
+
+## Female specific MR association count
+
+```{r}
+# add phylum data
+m = match(Derived_Estimates$BMI_females_fGRS$MR_outcome, taxonomy$outcome)
+Derived_Estimates$BMI_females_fGRS$phylum = taxonomy$Phylum[m]
+##
+Fspecific = Derived_Estimates$BMI_females_fGRS %>% filter(MR_outcome %in% primary_traits & MR_P < 0.05) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( phylum, trait_type, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq,  
+                 MR_beta, MR_se, MR_P, MR_Wald_F, MR_dhat_r2,
+                 Wu_Hausman_stat, Wu_Hausman_P)
+  
+# nrow(Fspecific) # 29
+
+Fspecific %>% knitr::kable() %>% kableExtra::kable_classic()
+
+```
+
+## male MR association count with males specific GRS
+
+```{r}
+# add phylum data
+m = match(Derived_Estimates$BMI_males_mGRS$MR_outcome, taxonomy$outcome)
+Derived_Estimates$BMI_males_mGRS$phylum = taxonomy$Phylum[m]
+##
+Mspecific = Derived_Estimates$BMI_males_mGRS %>% filter(MR_outcome %in% primary_traits & MR_P < 0.05) %>% 
+  arrange(oe_P) %>% 
+  dplyr::select( phylum, trait_type, oe_n, oe_beta, oe_se, oe_P, oe_exposure_eta_sq,  
+                 MR_beta, MR_se, MR_P, MR_Wald_F, MR_dhat_r2,
+                 Wu_Hausman_stat, Wu_Hausman_P)
+  
+# nrow(Mspecific) # 9
+
+Mspecific %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+# COMPARE General Pop Female MR with Female Specific MR
+
+```{r}
+fdata = data.frame(outcome = Derived_Estimates$BMI_females$MR_outcome,
+                   trait_type = Derived_Estimates$BMI_females$trait_type,
+                   genpop_f_beta = Derived_Estimates$BMI_females$MR_beta,
+                   genpop_f_se = Derived_Estimates$BMI_females$MR_se,
+                   genpop_f_p = Derived_Estimates$BMI_females$MR_P,
+                   fsp_f_beta = Derived_Estimates$BMI_females_fGRS$MR_beta,
+                   fsp_f_se = Derived_Estimates$BMI_females_fGRS$MR_se,
+                   fsp_f_p = Derived_Estimates$BMI_females_fGRS$MR_P)
+
+fdata = fdata %>% filter(outcome %in% primary_traits)
+
+
+cor.test(fdata$genpop_f_beta, fdata$fsp_f_beta)
+
+## for the plot place enterotype into PA and diversity into AB
+w = which( fdata$trait_type == "Div"); fdata$trait_type[w]="AB"
+w = which( fdata$trait_type == "Entero"); fdata$trait_type[w]="PA"
+
+
+fdata$association = ifelse(fdata$genpop_f_p < 0.05, "gen_pop P<0.05", "null")
+
+w = which(fdata$fsp_f_p < 0.05 & fdata$genpop_f_p > 0.05); fdata$association[w] = "Fsp P<0.05"
+
+w = which(fdata$genpop_f_p < 0.05 & fdata$fsp_f_p < 0.05); fdata$association[w] = "gen_pop & Fsp P<0.05"
+
+w = which(fdata$genpop_f_p < 0.05/36); fdata$association[w] = "gen_pop P<0.05/36"
+
+w = which(fdata$genpop_f_p < 0.05/36 & fdata$fsp_f_p < 0.05); fdata$association[w] = "gen_pop P<0.05/36 \n& Fsp P<0.05"
+
+fdata$association = factor(fdata$association, levels = c("null",
+                                                         "gen_pop P<0.05", "Fsp P<0.05",
+                                                         "gen_pop & Fsp P<0.05",
+                                                         "gen_pop P<0.05/36",
+                                                         "gen_pop P<0.05/36 \n& Fsp P<0.05"))
+
+table(fdata$association)
+```
+
+## paired t-test
+
+```{r}
+t.test(fdata$genpop_f_beta, fdata$fsp_f_beta, paired = TRUE)
+```
+
+
+## Z-test for difference in effect estimates
+
+```{r}
+z = t( sapply(1:nrow(temp), function(i){
+  ztest(beta1 = fdata$genpop_f_beta[i], se1 = fdata$genpop_f_se[i] , 
+        beta2 = fdata$fsp_f_beta[i] , se2 = fdata$fsp_f_se[i] )  
+}) )
+##
+fdata$ztest_P = z[,2]
+##
+summary(fdata$ztest_P)
+# which(fdata$ztest_P < 0.05)
+```
+
+## Sum Stats for female MR estimates
+
+```{r}
+## AB Pearson's correlation
+w = which(fdata$trait_type == "AB")
+x = cor.test(fdata$genpop_f_beta[w], fdata$fsp_f_beta[w])
+ab_Pearson_r = c(x$estimate, x$p.value)
+ab_Pearson_r = paste0("Pearson's r = ", round(ab_Pearson_r[1],2), "\np = ", formatC(ab_Pearson_r[2], digits  = 3) )
+
+## PA Pearson's correlation
+w = which(fdata$trait_type == "PA")
+x = cor.test(fdata$genpop_f_beta[w], fdata$fsp_f_beta[w])
+pa_Pearson_r = c(x$estimate, x$p.value)
+pa_Pearson_r = paste0("Pearson's r = ", round(pa_Pearson_r[1],2), "\np = ", formatC(pa_Pearson_r[2], digits  = 3) )
+
+## ANNOTATION TEXT
+ann_text = data.frame(label = c(ab_Pearson_r,pa_Pearson_r ),
+                      trait_type = c("AB","PA"), 
+                      x = c(-0.11, -0.3 ), 
+                      y = c(0.08, 0.08) )
+```
+
+
+```{r, fig.width = 15, fig.height = 5}
+
+fplot = fdata %>% ggplot(aes(x = genpop_f_beta, y = fsp_f_beta)) +
+  geom_abline(intercept = 0, slope = 1, color = "black", lty = "solid") +
+  geom_smooth(method = "lm", formula = y~x ) +
+  geom_vline(xintercept = 0, lty = "dashed", color = "black") +
+  geom_hline(yintercept = 0, lty = "dashed", color = "black") +
+  geom_point(aes(color = association), size = 3) +
+  #scale_color_brewer(palette = "Set1") +
+  scale_color_manual(values = c("grey", RColorBrewer::brewer.pal(5, "Set1") ) ) +
+  theme_bw() +
+  facet_wrap(~trait_type, scales = "free", ncol = 3 ) +
+  ggrepel::geom_text_repel( data = fdata %>% filter( association != "null" ) , 
+                  aes(label=outcome), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.3, 
+                  nudge_x = 0.015,
+                  nudge_y = 0.01,
+                  size = 2.5) +
+  geom_text( data = ann_text,
+             mapping = aes(x = x, y = y, label = label) ) +
+  labs(x = "general pop PGS MR beta in females",
+      y = "females specific PGS MR beta in females",
+      color = "general-pop PGS\nMR association")
+
+fplot
+```
+
+
+
+```{r,  fig.width = 15, fig.height = 15}
+f = paste0(project_results_dir, "figures/Female_vs_FemaleSpPGS_scatter_v2.pdf")
+pdf(f, width = 15, height = 5)
+fplot
+dev.off()
+
+```
+
+# COMPARE General Pop Male MR with male Specific MR
+
+```{r}
+mdata = data.frame(outcome = Derived_Estimates$BMI_males$MR_outcome,
+                   trait_type = Derived_Estimates$BMI_males$trait_type,
+                   genpop_f_beta = Derived_Estimates$BMI_males$MR_beta,
+                   genpop_f_se = Derived_Estimates$BMI_males$MR_se,
+                   genpop_f_p = Derived_Estimates$BMI_males$MR_P,
+                   fsp_f_beta = Derived_Estimates$BMI_males_mGRS$MR_beta,
+                   fsp_f_se = Derived_Estimates$BMI_males_mGRS$MR_se,
+                   fsp_f_p = Derived_Estimates$BMI_males_mGRS$MR_P)
+
+mdata = mdata %>% filter(outcome %in% primary_traits )
+
+cor.test(mdata$genpop_f_beta, mdata$fsp_f_beta)
+
+## for the plot place enterotype into PA and diversity into AB
+w = which( mdata$trait_type == "Div"); mdata$trait_type[w]="AB"
+w = which( mdata$trait_type == "Entero"); mdata$trait_type[w]="PA"
+
+
+mdata$association = ifelse(mdata$genpop_f_p < 0.05, "gen_pop P<0.05", "null")
+
+w = which(mdata$fsp_f_p < 0.05 & mdata$genpop_f_p > 0.05); mdata$association[w] = "Msp P<0.05"
+
+w = which(mdata$genpop_f_p < 0.05 & mdata$fsp_f_p < 0.05); mdata$association[w] = "gen_pop & Msp P<0.05"
+
+
+mdata$association = factor(mdata$association, levels = c("null",
+                                                         "gen_pop P<0.05", "Msp P<0.05",
+                                                         "gen_pop & Msp P<0.05"))
+
+table(mdata$association)
+
+```
+
+## paired t-test
+
+```{r}
+t.test(mdata$genpop_f_beta, mdata$fsp_f_beta, paired = TRUE)
+```
+
+## Z-test for difference in effect estimates
+
+```{r}
+z = t( sapply(1:nrow(temp), function(i){
+  ztest(beta1 = mdata$genpop_f_beta[i], se1 = mdata$genpop_f_se[i] , 
+        beta2 = mdata$fsp_f_beta[i] , se2 = mdata$fsp_f_se[i] )  
+}) )
+##
+mdata$ztest_P = z[,2]
+```
+
+
+## Sum Stats for female MR estimates
+
+```{r}
+## AB Pearson's correlation
+w = which(mdata$trait_type == "AB")
+x = cor.test(mdata$genpop_f_beta[w], mdata$fsp_f_beta[w])
+ab_Pearson_r = c(x$estimate, x$p.value)
+ab_Pearson_r = paste0("Pearson's r = ", round(ab_Pearson_r[1],2), "\np = ", formatC(ab_Pearson_r[2], digits  = 3) )
+
+## PA Pearson's correlation
+w = which(mdata$trait_type == "PA")
+x = cor.test(mdata$genpop_f_beta[w], mdata$fsp_f_beta[w])
+pa_Pearson_r = c(x$estimate, x$p.value)
+pa_Pearson_r = paste0("Pearson's r = ", round(pa_Pearson_r[1],2), "\np = ", formatC(pa_Pearson_r[2], digits  = 3) )
+
+## RA Pearson's correlation
+w = which(mdata$trait_type == "RA")
+x = cor.test(mdata$genpop_f_beta[w], mdata$fsp_f_beta[w])
+ra_Pearson_r = c(x$estimate, x$p.value)
+ra_Pearson_r = paste0("Pearson's r = ", round(ra_Pearson_r[1],2), "\np = ", formatC(ra_Pearson_r[2], digits  = 3) )
+
+
+## ANNOTATION TEXT
+ann_text = data.frame(label = c(ab_Pearson_r, ra_Pearson_r, pa_Pearson_r ),
+                      trait_type = c("AB", "RA",  "PA"), 
+                      x = c(0.08, 0.075, 0.18 ), 
+                      y = c(-0.125, -0.085, -0.31) )
+```
+
+
+```{r, fig.width = 15, fig.height = 5}
+
+mplot = mdata %>% ggplot(aes(x = genpop_f_beta, y = fsp_f_beta)) +
+  geom_abline(intercept = 0, slope = 1, color = "black", lty = "solid") +
+  geom_smooth(method = "lm", formula = y~x ) +
+  geom_vline(xintercept = 0, lty = "dashed", color = "black") +
+  geom_hline(yintercept = 0, lty = "dashed", color = "black") +
+  geom_point(aes(color = association), size = 3) +
+  #scale_color_brewer(palette = "Set1") +
+  scale_color_manual(values = c("grey", RColorBrewer::brewer.pal(5, "Set1") ) ) +
+  theme_bw() +
+  ggrepel::geom_text_repel( data = mdata %>% filter( association != "null" ) , 
+                  aes(label=outcome), 
+                  min.segment.length = 0.01,
+                  box.padding = 0.3, 
+                  nudge_x = 0.015,
+                  nudge_y = 0.01,
+                  size = 2.5) +
+  facet_wrap(~trait_type, scales = "free" ) +
+  geom_text( data = ann_text,
+             mapping = aes(x = x, y = y, label = label) ) +
+  labs(x = "general pop PGS MR beta in males",
+      y = "males specific PGS MR beta in males",
+      color = "general-pop PGS\nMR association") +
+  theme(legend.position="bottom") 
+
+mplot
+```
+
+
+
+
+```{r,  fig.width = 15, fig.height = 15}
+f = paste0(project_results_dir, "figures/Male_vs_MmaleSpPGS_scatter_v2.pdf")
+pdf(f, width = 15, height = 5)
+mplot
+dev.off()
+
+```
+
+## Forest plot for top BMI results
+
+```{r, fig.width = 10, fig.height = 12}
+BMI_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "BMI", alpha = 0.05/31 )
+BMI_long = BMI_long %>% filter(outcome %in% primary_traits)
+
+## Define analysis factor order
+BMI_long$analysis = factor(BMI_long$analysis, levels = c("tsls_BMI", "obs_BMI")[2:1] )
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[8]
+y = RColorBrewer::brewer.pal(8, "Reds")[8]
+pcol = c(y,x)
+
+
+## MAKE PLOT
+plot = dh_forrest_plot(data = BMI_long, 
+                           alpha = 0.05/36, 
+                           analysis_type = "tsls_BMI",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol)
+
+plot
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forrest_top_results_060823.pdf")
+pdf(f, width = 10, height = 12)
+plot
+dev.off()
+```
+
+
+
+
+
+```{r, fig.width = 12, fig.height = 10}
+library(ggforestplot)
+k = BMI_long %>% filter(analysis == "tsls_BMI" & pval < 0.05/33) %>% dplyr::pull(outcome)
+temp = BMI_long %>% filter(outcome %in% k)
+
+m = match(temp$outcome, taxonomy$trait_name2)
+temp$phylum = taxonomy$Phylum[m]
+w = which( is.na( temp$phylum ) )
+if(length(w)>1){temp$phylum[w] = "Ratios"}
+
+
+##
+( plot1 = ggforestplot::forestplot(
+  df = temp ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/36,
+  title = "microbiome traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis
+) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+)
+
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forrest_top_results_v4.pdf")
+pdf(f, width = 10, height = 8)
+plot1
+dev.off()
+```
+
+
+```{r}
+BMI_gen = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "gen_pop", alpha = 0.05/33 )
+
+BMI_females = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females, 
+                                        pop_id = "females", alpha = 0.05/33 )
+
+BMI_males = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males, 
+                                        pop_id = "males", alpha = 0.05/33 )
+
+BMI_all = rbind(BMI_gen, BMI_females, BMI_males)
+BMI_all$analysis = factor(BMI_all$analysis, levels = c("tsls_gen_pop", "tsls_females","tsls_males",
+                                                       "obs_gen_pop", "obs_females", "obs_males")[6:1] )
+
+BMI_all = BMI_all %>% filter(outcome %in% primary_traits)
+
+
+## add phylum taxonomy
+m = match(BMI_all$outcome, taxonomy$trait_name)
+BMI_all$phylum = taxonomy$Phylum[m]
+
+## add in the ratios labels to phylum
+w = which( is.na( BMI_all$phylum ) )
+BMI_all$phylum[w] = "Ratios"
+
+## replace the ratio names with the new trait names
+n = BMI_all$outcome[w]
+m = match(n, taxonomy$trait_name)
+new = taxonomy$new_trait_name[m]
+new = gsub("\\|"," | ",new)
+new = gsub("_RA","",new)
+BMI_all$outcome[w] = new
+
+## Add a phylum ratio label
+BMI_all$ratio_cat = NA
+BMI_all$ratio_cat[w] = taxonomy$phylum_ratio[m]
+BMI_all$ratio_cat = gsub("\\|"," | ",BMI_all$ratio_cat)
+
+```
+
+
+
+```{r, fig.width = 12, fig.height = 20}
+library(ggforestplot)
+k = BMI_all %>% filter(analysis %in% c("tsls_gen_pop", "tsls_females") & pval < 0.05/36) %>% dplyr::pull(outcome)
+temp = BMI_all %>% filter(outcome %in% k)
+
+w = which(!is.na(temp$ratio_cat))
+temp$phylum[w] = temp$ratio_cat[w]
+
+## 
+mrcol = pcol = RColorBrewer::brewer.pal(3, "Set1")[3:1]
+obscol = pcol = RColorBrewer::brewer.pal(8, "Greys")[c(4,6,8)]
+pcol = c(obscol, mrcol)
+# pblue = RColorBrewer::brewer.pal(n = 8, name = "Blues")[c(4,6,8)]
+# pred = RColorBrewer::brewer.pal(n = 8, name = "Reds")[c(4,6,8)]
+# pcol = c(pred, pblue)
+
+##
+( plot1 = ggforestplot::forestplot(
+  df = temp ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/36,
+  title = "microbiome traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+)
+
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forrest_top_results_140823.pdf")
+pdf(f, width = 10, height = 15)
+plot1
+dev.off()
+```
+
+
+
+
+
+```{r, fig.width = 12, fig.height = 20}
+## remove the observational data
+w = which( temp$analysis %in% c("obs_males", "obs_females", "obs_gen_pop") )
+if(length(w)>1){ temp = temp[-w,] }
+
+pcol = RColorBrewer::brewer.pal(3, "Set1")[3:1]
+
+##
+( plot1 = ggforestplot::forestplot(
+  df = temp ,
+  name = outcome,
+  estimate = beta,
+  se = se,
+  pvalue = pval,
+  psignif = 0.05/36,
+  title = "microbiome traits",
+  xlab = "1 normalized SD increase in MT\nper 1 unit increase in BMI",
+  colour = analysis ) +
+  scale_color_manual(values = pcol ) +
+  theme(legend.position="bottom") +
+  ggforce::facet_col(
+    facets = ~phylum,
+    scales = "free_y",
+    space = "free") +
+  guides(colour = guide_legend(override.aes = list(size=5)) )
+)
+
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forrest_top_results_140823_no_Obs.pdf")
+pdf(f, width = 10, height = 15)
+plot1
+dev.off()
+```
+
+
+
+
+
+## Forest plot for nominal BMI results
+
+```{r, fig.width = 20, fig.height = 12}
+BMI_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "BMI", alpha = 0.05/36 )
+
+
+## Define analysis factor order
+BMI_long$analysis = factor(BMI_long$analysis, levels = c("tsls_BMI", "obs_BMI")[2:1] )
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[8]
+y = RColorBrewer::brewer.pal(8, "Reds")[8]
+pcol = c(y,x)
+
+
+## MAKE PLOT
+plot = dh_forrest_plot(data = BMI_long, 
+                           alpha = 0.05, 
+                           analysis_type = "tsls_BMI",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 2,
+                           color_choices = pcol)
+
+plot
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forrest_nominal_results.pdf")
+pdf(f, width = 20, height = 12)
+plot
+dev.off()
+```
+
+
+
+## INCLUDE BOTH SEXES
+
+## Convert BMI (males and females) to long format and merge
+
+```{r}
+##########################
+## convert 2 long format
+##########################
+BMI_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "BMI", alpha = 0.05/36 )
+BMI_females_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females, 
+                                        pop_id = "BMI_females", alpha = 0.05/36 )
+BMI_males_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males, 
+                                        pop_id = "BMI_males", alpha = 0.05/36 )
+###
+BMI_females_specfic_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females_fGRS, 
+                                        pop_id = "BMI_females", alpha = 0.05/36 )
+BMI_females_specfic_long$analysis = paste0(BMI_females_specfic_long$analysis, "_specific")
+###
+BMI_males_specfic_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males_mGRS, 
+                                        pop_id = "BMI_males", alpha = 0.05/36 )
+BMI_males_specfic_long$analysis = paste0(BMI_males_specfic_long$analysis, "_specific")
+##########################
+## Merge data sets
+##########################
+BMI_long_all = rbind(BMI_long, BMI_females_long, BMI_females_specfic_long, BMI_males_long, BMI_males_specfic_long)
+
+##########################
+## remove the observational data
+##########################
+w = grep("obs_", BMI_long_all$analysis)
+BMI_long_all_MR = BMI_long_all[-w,]
+
+## edit tsls to MR
+BMI_long_all_MR$analysis = gsub("tsls","MR",BMI_long_all_MR$analysis)
+BMI_long_all_MR$analysis = gsub("_BMI","",BMI_long_all_MR$analysis)
+
+w = which(BMI_long_all_MR$analysis == "MR"); BMI_long_all_MR$analysis[w] = "general pop"
+BMI_long_all_MR$analysis = gsub("MR_","",BMI_long_all_MR$analysis)
+BMI_long_all_MR$analysis = gsub("_"," ",BMI_long_all_MR$analysis)
+
+table(BMI_long_all_MR$analysis)
+```
+
+## Forest plot with both sexes included
+
+```{r, fig.width = 20, fig.height = 12}
+## Define analysis factor order
+BMI_long_all_MR$analysis = factor(BMI_long_all_MR$analysis, 
+                                  levels = c("general pop", 
+                                             "females", "females specific",
+                                             "males", "males specific")[5:1] )
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[c(8,6)]
+y = RColorBrewer::brewer.pal(8, "Reds")[c(8,6)]
+pcol = c("black",y,x)
+
+
+## MAKE PLOT
+genpop_plot = dh_forrest_plot(data = BMI_long_all_MR, 
+                           alpha = 0.05/36, 
+                           analysis_type = "general pop",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 3,
+                           color_choices = pcol, 
+                       label_size = 6)
+
+genpop_plot
+```
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forest_top_results_both_sexes.pdf")
+pdf(f, width = 7, height = 7)
+plot
+dev.off()
+```
+
+```{r, fig.width = 10, fig.height = 3}
+t2p = c("Div_Chao1","G_Adlercreutzia_0.66_PA")
+female_plot = dh_forrest_plot(data = BMI_long_all_MR, 
+                           alpha = 0.05/44, 
+                           analysis_type = "females",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol, 
+                       label_size = 6, 
+                       traits_2_plot = t2p)
+
+female_plot
+```
+```{r, fig.width = 10, fig.height = 10}
+topforest = ggpubr::ggarrange(genpop_plot,female_plot,
+                  ncol = 1, 
+                  labels = c("A", "B"),
+                  common.legend = TRUE, 
+                  legend = "bottom",
+                  heights = c(7, 1.4))
+topforest
+```
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forest_TOP.pdf")
+pdf(f, width = 8, height = 9)
+topforest
+dev.off()
+```
+
+
+
+## Simplified -- excluded sex-specific MR
+
+```{r}
+BMI_long_all_MR_v2 = BMI_long_all_MR
+w = grep("specific", BMI_long_all_MR$analysis)
+BMI_long_all_MR_v2 = BMI_long_all_MR_v2[-w, ]
+```
+
+
+```{r, fig.width = 22, fig.height = 15}
+## Define analysis factor order
+BMI_long_all_MR_v2$analysis = factor(BMI_long_all_MR_v2$analysis, 
+                                  levels = c("general pop", 
+                                             "females", 
+                                             "males")[3:1] )
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[c(8)]
+y = RColorBrewer::brewer.pal(8, "Reds")[c(8)]
+pcol = c("black",y,x)
+
+
+## MAKE PLOT
+genpop_plot = dh_forrest_plot(data = BMI_long_all_MR_v2, 
+                           alpha = 0.05/36, 
+                           analysis_type = "general pop",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 2,
+                           color_choices = pcol, 
+                       label_size = 10,
+                       point_size = 1)
+
+genpop_plot
+```
+
+```{r}
+f = paste0(project_results_dir, "figures/POSTER_forest_plot_A.pdf")
+pdf(f, width = 15, height = 4.5)
+genpop_plot
+dev.off()
+```
+
+```{r, fig.width = 10, fig.height = 1.5}
+t2p = c("Div_Chao1","G_Adlercreutzia_0.66_PA")
+female_plot = dh_forrest_plot(data = BMI_long_all_MR_v2, 
+                           alpha = 0.05/44, 
+                           analysis_type = "females",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 2,
+                           color_choices = pcol, 
+                       label_size = 10, 
+                       traits_2_plot = t2p, 
+                       point_size = 1)
+
+female_plot
+```
+```{r, fig.width = 15, fig.height = 8}
+topforest = ggpubr::ggarrange(genpop_plot,female_plot,
+                  ncol = 1, 
+                  labels = c("A", "B"),
+                  common.legend = TRUE, 
+                  legend = "bottom",
+                  heights = c(4,1))
+topforest
+```
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/POSTER_forest_plot.pdf")
+pdf(f, width = 15, height = 8)
+topforest
+dev.off()
+```
+
+
+
+
+## Relaxed P-values Plots
+
+## Convert BMI (males and females) to long format and merge
+
+```{r}
+##########################
+## convert 2 long format
+##########################
+BMI_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "BMI", alpha = 0.05 )
+BMI_females_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females, 
+                                        pop_id = "BMI_females", alpha = 0.05 )
+BMI_males_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males, 
+                                        pop_id = "BMI_males", alpha = 0.05 )
+###
+BMI_females_specfic_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females_fGRS, 
+                                        pop_id = "BMI_females", alpha = 0.05 )
+BMI_females_specfic_long$analysis = paste0(BMI_females_specfic_long$analysis, "_specific")
+###
+BMI_males_specfic_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males_mGRS, 
+                                        pop_id = "BMI_males", alpha = 0.05 )
+BMI_males_specfic_long$analysis = paste0(BMI_males_specfic_long$analysis, "_specific")
+##########################
+## Merge data sets
+##########################
+BMI_long_all_relaxedP = rbind(BMI_long, 
+                              BMI_females_long, BMI_females_specfic_long, 
+                              BMI_males_long, BMI_males_specfic_long)
+
+##########################
+## remove the observational data
+##########################
+w = grep("obs_", BMI_long_all_relaxedP$analysis)
+BMI_long_all_MR_relaxedP = BMI_long_all_relaxedP[-w,]
+
+## edit tsls to MR
+BMI_long_all_MR_relaxedP$analysis = gsub("tsls","MR",BMI_long_all_MR_relaxedP$analysis)
+BMI_long_all_MR_relaxedP$analysis = gsub("_BMI","",BMI_long_all_MR_relaxedP$analysis)
+
+w = which(BMI_long_all_MR_relaxedP$analysis == "MR"); BMI_long_all_MR_relaxedP$analysis[w] = "general pop"
+BMI_long_all_MR_relaxedP$analysis = gsub("MR_","",BMI_long_all_MR_relaxedP$analysis)
+BMI_long_all_MR_relaxedP$analysis = gsub("_"," ",BMI_long_all_MR_relaxedP$analysis)
+
+table(BMI_long_all_MR_relaxedP$analysis)
+```
+
+```{r}
+## Define analysis factor order
+BMI_long_all_MR_relaxedP$analysis = factor(BMI_long_all_MR$analysis, 
+                                  levels = c("general pop", 
+                                             "females", "females specific",
+                                             "males", "males specific")[5:1] )
+
+```
+
+
+
+```{r, fig.width = 10, fig.height = 12}
+t2p = rownames(Mspecific)
+male_plot = dh_forrest_plot(data = BMI_long_all_MR_relaxedP, 
+                           alpha = 0.05, 
+                           analysis_type = "males",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol, 
+                       label_size = 8, 
+                       traits_2_plot = NA)
+
+male_plot
+```
+
+
+
+
+```{r, fig.width = 10, fig.height = 5}
+
+male_SP_plot = dh_forrest_plot(data = BMI_long_all_MR_relaxedP, 
+                           alpha = 0.05, 
+                           analysis_type = "males specific",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol, 
+                       label_size = 8, 
+                       traits_2_plot = NA)
+
+male_SP_plot
+```
+
+
+
+```{r}
+ids = BMI_long_all_MR_relaxedP %>% 
+  filter(analysis %in% c("males", "males specific") & pval <= 0.05 ) %>%
+  arrange(analysis, pval) %>%
+  dplyr::select(outcome)
+
+ids = unique(ids$outcome)
+```
+
+```{r}
+t2p = BMI_long_all_MR_relaxedP %>% 
+  filter(analysis == "males" & outcome %in% ids) %>%
+  arrange(beta) %>%
+  dplyr::select(outcome)
+t2p = t2p$outcome
+```
+
+
+```{r, fig.width = 10, fig.height = 12}
+all_male_plot = dh_forrest_plot(data = BMI_long_all_MR_relaxedP, 
+                           alpha = 0.05, 
+                           analysis_type = "males",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol, 
+                       label_size = 8, 
+                       traits_2_plot = t2p)
+
+all_male_plot
+```
+
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_male_forestplot_plessthan_0.05.pdf")
+pdf(f, width = 8, height = 12)
+all_male_plot
+dev.off()
+```
+
+
+
+
+```{r}
+ids = BMI_long_all_MR_relaxedP %>% 
+  filter(analysis %in% c("females", "females specific") & pval <= 0.05 ) %>%
+  arrange(analysis, pval) %>%
+  dplyr::select(outcome)
+
+ids = unique(ids$outcome)
+```
+
+```{r}
+t2p = BMI_long_all_MR_relaxedP %>% 
+  filter(analysis == "females" & outcome %in% ids) %>%
+  arrange(beta) %>%
+  dplyr::select(outcome)
+t2p = t2p$outcome
+```
+
+
+```{r, fig.width = 15, fig.height = 18}
+all_female_plot = dh_forrest_plot(data = BMI_long_all_MR_relaxedP, 
+                           alpha = 0.05, 
+                           analysis_type = "males",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 2,
+                           color_choices = pcol, 
+                       label_size = 8, 
+                       traits_2_plot = t2p)
+
+all_female_plot
+```
+
+
+
+
+```{r}
+f = paste0(project_results_dir, "figures/MR_female_forestplot_plessthan_0.05.pdf")
+pdf(f, width = 15, height = 15)
+all_female_plot
+dev.off()
+```
+
+
+
+
+
+## Comparison between Observational and MR effect estimates
+
+-- for PA and AB traits 
+-- BMI is the exposure
+-- amongst all individuals
+
+```{r, fig.width = 10, fig.height = 10}
+BMI_results = Derived_Estimates$BMI
+
+## BMI OBservational Significance
+BMI_results$oe_sig = "Obs P > 0.05"
+w = which(BMI_results$oe_P < 0.05)
+if(length(w)>0){ BMI_results$oe_sig[w] = "Obs P < 0.05" }
+w = which(BMI_results$oe_P < 0.05/46)
+if(length(w)>0){ BMI_results$oe_sig[w] = paste0("Obs P < ", round(0.05/46, d = 4) ) }
+BMI_results$oe_sig = factor(BMI_results$oe_sig, 
+                      levels = c( "Obs P > 0.05", 
+                                  "Obs P < 0.05", 
+                                  paste0("Obs P < ", round(0.05/46, d = 4) ) ) )
+## BMI MR Significance
+BMI_results$MR_sig = "MR P > 0.05"
+w = which(BMI_results$MR_P < 0.05)
+if(length(w)>0){ BMI_results$MR_sig[w] = "MR P < 0.05" }
+w = which(BMI_results$MR_P < 0.05/46)
+if(length(w)>0){ BMI_results$MR_sig[w] = paste0("MR P < ", round(0.05/46, d = 4) ) }
+BMI_results$MR_sig = factor(BMI_results$MR_sig, 
+                      levels = c( "MR P > 0.05", 
+                                  "MR P < 0.05", 
+                                  paste0("MR P < ", round(0.05/46, d = 4) ) ) )
+
+
+#################
+## PLOT
+#################
+plot = BMI_results %>% ggplot( aes(x = oe_beta, y = MR_beta) ) +
+  geom_smooth(formula = y~x, method = loess, color = "black") + 
+  geom_smooth(formula = y~x, method = lm, color = "grey50") +
+  geom_point( aes( shape = oe_sig, fill = MR_sig ), size = 4, alpha = .80 ) +
+  scale_shape_manual(values = c(21,22,23)) +
+  scale_fill_brewer(palette = "Set1") +
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 0, color = "black", linetype = "dashed") +
+  theme_bw() +
+  guides(fill = guide_legend( override.aes = list (shape=c(24) ) ) ) +
+  labs( fill = "MR significance", shape = "Obs. significance" ,
+        x = "Observational effect estimates", y = "MR effect estimates") +
+  # ggrepel::geom_text_repel( data = BMI_results %>% filter(MR_P < 0.05/46) , 
+  #                 aes(label=MR_outcome), 
+  #                 min.segment.length = 0,
+  #                 box.padding = 0.4,
+  #                 nudge_x = 0.015,
+  #                 nudge_y = -0.01,
+  #                 label.size = 3) +
+  facet_wrap(. ~ trait_type, nrow = 2, scales = "free") 
+
+
+plot
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/obs_vs_mr.pdf")
+pdf(f, width = 10, height = 8)
+plot
+dev.off()
+```
+
+
+```{r}
+cor.test(BMI_results$oe_beta, BMI_results$MR_beta)
+```
+
+```{r}
+w = which(BMI_results$trait_type == "AB")
+cor.test(BMI_results$oe_beta[w], BMI_results$MR_beta[w])
+```
+
+
+```{r}
+w = which(BMI_results$trait_type == "PA")
+cor.test(BMI_results$oe_beta[w], BMI_results$MR_beta[w])
+
+```
+
+
+
+## Diversity traits with NO Rank Normal Transformation
+
+```{r}
+## Add diversity traits
+div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+mts = c(div)
+
+## Derive Estiamtes
+div_iv = t( sapply(mts, function(mt){
+  ivtoolsfit( wdata = mydata,
+            outcome = mt,
+            exposure = "BMI",
+            instrument = "pruit_BMI_wGRS_info_hwe_filtered",
+            covariates = c( "imputed_sex","age"),
+            outcome_model_family = "gaussian",
+            exposure_model_family = "gaussian",
+            weights = NA,
+            rnt_outcome = FALSE)
+}) )
+
+####
+div_iv = as.data.frame(div_iv)
+###
+for(i in 4:ncol(div_iv)){ div_iv[,i] = as.numeric(div_iv[,i])  }
+div_iv$trait_type = "AB"
+colnames(div_iv)[14] = "oe_ABt_PAz_val"
+```
+
+
+```{r}
+div_iv %>% 
+  dplyr::select( oe_beta, oe_se, oe_P, MR_n,  MR_beta, MR_se, MR_P, MR_Wald_F) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+# Confounders
+
+
+## Is the BMI GRS correlated with household income?
+
+```{r}
+fit = glm(pruit_BMI_wGRS_info_hwe_filtered ~ house_hold_monthl_net_income, data = mydata)
+summary(fit)$coef
+```
+
+## Is the BMI GRS correlated with smoking? 
+
+```{r}
+mydata$smoking_never_ever_current = factor(mydata$smoking_never_ever_current, 
+                                           levels = c("never", "ever", "current"  ) )
+
+fit = lm(pruit_BMI_wGRS_info_hwe_filtered ~ as.numeric( smoking_never_ever_current ), data = mydata)
+summary(fit)$coef
+#anova(fit)
+```
+
+
+## Is the BMI GRS correlated with 16S batch variables? 
+
+```{r}
+bvars = colnames(mydata)[68:74]
+
+Batch_Var_PGS_Association = sapply(bvars, function(v){
+  form = formula( paste0("pruit_BMI_wGRS_info_hwe_filtered ~ ", as.factor( v ) ) )
+  #form = formula( paste0("BMI ~ ", as.factor( v ) ) )
+  fit = lm(form, data = mydata)
+  a = anova(fit)
+  p = a[1,5]
+  return(p)
+})
+
+Batch_Var_PGS_Association
+
+# fit = lm(pruit_BMI_wGRS_info_hwe_filtered ~ Date.of.extraction , data = mydata)
+# summary(fit)$coef
+# anova(fit)
+```
+
+# Are Dietary variables confounders ??
+
+## Dietary variables
+
+```{r}
+Dvars = c( "is_followingadiet", "is_gaining_weight_unintentionally", colnames(study_data$clinical_data)[1012:1102] )
+
+## Some Other Variables of interest
+OtherVars = c("sleeping_hours_per_day", "moderate_activities", "exercising_habits", "daily_seated_work_hours")
+```
+
+## Is the BMI GRS correlated with any dietary variables? 
+
+```{r}
+###
+DVars_2_use = c("sleeping_hours_per_day", "moderate_activities", "exercising_habits", "daily_seated_work_hours", 
+                "is_followingadiet", "is_gaining_weight_unintentionally", "is_vegetarian", "is_vegan" )
+##
+TempData = cbind(mydata, study_data$clinical_data[, DVars_2_use], AvgConVar)
+##
+DVars_2_use = c(DVars_2_use, colnames(AvgConVar) )
+##
+Diet_Var_PGS_Association = t( sapply(DVars_2_use, function(v){
+  form = formula( paste0("pruit_BMI_wGRS_info_hwe_filtered ~  as.numeric(",v,")" ) )
+  fit = lm(form, data = TempData)
+  s = summary(fit)
+  coef = s$coef[2, c(1,2,4)]
+  r2 = s$r.squared
+  a = anova(fit)
+  Fstat = a[1,4]
+  out = c(coef, r2, Fstat)
+  names(out) = c("Beta","SE","P","R2","F")
+  return(out)
+}) )
+
+Diet_Var_PGS_Association %>% knitr::kable() %>% kableExtra::kable_classic()
+
+```
+
+
+
+## Evaluation of the BMI Sensitivity Effect Estimates
+
+```{r}
+sensitivity_out = BMI_sensitivity$BMI %>% filter(MR_P < 0.05/36) %>% 
+  filter(MR_outcome %in% primary_traits) %>%
+  arrange(MR_P)
+
+sensitivity_out %>% dplyr::select( MR_n,  MR_beta, MR_se, MR_P, MR_Wald_F, trait_type, analysis_name) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Convert BMI (v0 and sensitivity) to long format and merge
+
+```{r}
+##########################
+## convert 2 long format
+##########################
+BMI_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits), 
+                                        pop_id = "BMI", alpha = 0.05/36 )
+
+BMI_sens_long = ivtoolsfit_2_longformat(data = BMI_sensitivity$BMI %>% filter(MR_outcome %in% primary_traits), 
+                                        pop_id = "BMI_sensitivity", alpha = 0.05/36 )
+
+##########################
+## Merge data sets
+##########################
+new_BMI_long = rbind(BMI_long, BMI_sens_long )
+```
+
+```{r}
+a = Derived_Estimates$BMI %>% filter(MR_outcome %in% primary_traits)
+s = BMI_sensitivity$BMI %>% filter(MR_outcome %in% primary_traits)
+cor.test(a$MR_beta, s$MR_beta)
+```
+
+
+## Forest plot with both sexes included
+
+```{r, fig.width = 15, fig.height = 12}
+## Define analysis factor order
+new_BMI_long$analysis = factor(new_BMI_long$analysis, levels = c("tsls_BMI", "tsls_BMI_sensitivity",
+                                                         "obs_BMI", "obs_BMI_sensitivity"  )[4:1] )
+
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[8:7]
+y = RColorBrewer::brewer.pal(8, "Reds")[8:7]
+pcol = c(y,x)
+
+
+## MAKE PLOT
+plot = dh_forrest_plot(data = new_BMI_long, 
+                           alpha = 0.05/44, 
+                           analysis_type = "tsls_BMI",
+                           arrange_by = "beta",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol)
+
+plot
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forest_top_results_sensitivity_060823.pdf")
+pdf(f, width = 20, height = 17)
+plot
+dev.off()
+```
+
+```{r}
+##########################
+## convert 2 long format
+##########################
+BMI_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI, 
+                                        pop_id = "BMI", alpha = 0.05/44 )
+BMI_females_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_females, 
+                                        pop_id = "BMI_females", alpha = 0.05/44 )
+BMI_males_long = ivtoolsfit_2_longformat(data = Derived_Estimates$BMI_males, 
+                                        pop_id = "BMI_males", alpha = 0.05/44 )
+
+BMI_sens_long = ivtoolsfit_2_longformat(data = BMI_sensitivity, 
+                                        pop_id = "BMI_sensitivity", alpha = 0.05/44 )
+
+
+##########################
+## Merge data sets
+##########################
+BMI_long_all = rbind(BMI_long, BMI_sens_long, BMI_females_long, BMI_males_long)
+```
+
+## Forest plot with both sexes included
+
+```{r, fig.width = 10, fig.height = 12}
+## Define analysis factor order
+BMI_long_all$analysis = factor(BMI_long_all$analysis, levels = c("tsls_BMI", "tsls_BMI_sensitivity", "tsls_BMI_females", "tsls_BMI_males",
+                                                         "obs_BMI", "obs_BMI_sensitivity", "obs_BMI_females", "obs_BMI_males" )[8:1] )
+
+
+## Define Colors
+x = RColorBrewer::brewer.pal(8, "Blues")[c(8:7,5:4)]
+# x2 = RColorBrewer::brewer.pal(8, "Greens")[8:7]
+y = RColorBrewer::brewer.pal(8, "Reds")[c(8:7, 5:4)]
+# y2 = RColorBrewer::brewer.pal(8, "Greens")[6:5]
+#pcol = c(y, y2, x ,x2)
+pcol = c(y, x)
+
+## MAKE PLOT
+plot = dh_forrest_plot(data = BMI_long_all, 
+                           alpha = 0.05/44, 
+                           analysis_type = "tsls_BMI",
+                           arrange_by = "pval",
+                           title = NA, 
+                           covariates = NA, 
+                           confounders = NA,
+                           outcome_label = "outcome : MTs",
+                           exposure_label = "exposure : BMI",
+                           filter_data = TRUE,
+                           column_4_x = "analysis",
+                           column_4_color = "analysis",
+                           col_count = 1,
+                           color_choices = pcol)
+
+plot
+
+
+```
+
+
+```{r}
+f = paste0(project_results_dir, "figures/bmi_forest_top_results_sex_and_sensitivity.pdf")
+pdf(f, width = 10, height = 12)
+plot
+dev.off()
+```
+
+
+
+
+
+
+## Comparison between Observational and MR effect estimates using the alternative (residual) BMI exposure
+
+-- for PA and AB traits 
+-- BMI is the exposure
+-- amongst all individuals
+
+```{r, fig.width = 10, fig.height = 10}
+BMI_results = BMI_alt_BMIexposure
+
+## BMI OBservational Significance
+BMI_results$oe_sig = "Obs P > 0.05"
+w = which(BMI_results$oe_P < 0.05)
+if(length(w)>0){ BMI_results$oe_sig[w] = "Obs P < 0.05" }
+w = which(BMI_results$oe_P < 0.05/46)
+if(length(w)>0){ BMI_results$oe_sig[w] = paste0("Obs P < ", round(0.05/46, d = 4) ) }
+BMI_results$oe_sig = factor(BMI_results$oe_sig, 
+                      levels = c( "Obs P > 0.05", 
+                                  "Obs P < 0.05", 
+                                  paste0("Obs P < ", round(0.05/46, d = 4) ) ) )
+## BMI MR Significance
+BMI_results$MR_sig = "MR P > 0.05"
+w = which(BMI_results$MR_P < 0.05)
+if(length(w)>0){ BMI_results$MR_sig[w] = "MR P < 0.05" }
+w = which(BMI_results$MR_P < 0.05/46)
+if(length(w)>0){ BMI_results$MR_sig[w] = paste0("MR P < ", round(0.05/46, d = 4) ) }
+BMI_results$MR_sig = factor(BMI_results$MR_sig, 
+                      levels = c( "MR P > 0.05", 
+                                  "MR P < 0.05", 
+                                  paste0("MR P < ", round(0.05/46, d = 4) ) ) )
+
+
+#################
+## PLOT
+#################
+plot = BMI_results %>% ggplot( aes(x = oe_beta, y = MR_beta) ) +
+  geom_smooth(formula = y~x, method = loess, color = "black") + 
+  geom_smooth(formula = y~x, method = lm, color = "grey50") +
+  geom_point( aes( shape = oe_sig, fill = MR_sig ), size = 4, alpha = .80 ) +
+  scale_shape_manual(values = c(21,22,23)) +
+  scale_fill_brewer(palette = "Set1") +
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 0, color = "black", linetype = "dashed") +
+  theme_bw() +
+  guides(fill = guide_legend( override.aes = list (shape=c(24) ) ) ) +
+  labs( fill = "MR significance", shape = "Obs. significance" ,
+        x = "Observational effect estimates", y = "MR effect estimates") +
+  # ggrepel::geom_text_repel( data = BMI_results %>% filter(MR_P < 0.05/46) , 
+  #                 aes(label=MR_outcome), 
+  #                 min.segment.length = 0,
+  #                 box.padding = 0.4,
+  #                 nudge_x = 0.015,
+  #                 nudge_y = -0.01,
+  #                 label.size = 3) +
+  facet_wrap(. ~ trait_type, nrow = 2, scales = "free") 
+
+
+plot
+```
+
+```{r}
+cor.test(BMI_results$oe_beta, BMI_results$MR_beta)
+```
+
+```{r}
+w = which(BMI_results$trait_type == "AB")
+cor.test(BMI_results$oe_beta[w], BMI_results$MR_beta[w])
+```
+
+```{r}
+w = which(BMI_results$trait_type == "PA")
+cor.test(BMI_results$oe_beta[w], BMI_results$MR_beta[w])
+
+```
+
+
+
+
+## A comparison of beta for instrument on exposure in males and females
+
+```{r}
+df = data.frame( outcome = Derived_Estimates$BMI_females$MR_outcome,
+  female_beta = Derived_Estimates$BMI_females$ei_beta,
+  male_beta = Derived_Estimates$BMI_males$ei_beta )
+
+df |> summarize(f = mean(female_beta), m = mean(male_beta))
+
+df|> ggplot(aes(x = female_beta, y = male_beta)) +
+  geom_point(size = 1.5) + 
+  geom_vline(xintercept = mean(df$female_beta), color = "green" , linetype = "dashed") +
+  geom_hline(yintercept = mean(df$male_beta), color = "red" , linetype = "dashed") +
+  geom_abline(intercept = 0, slope = 1) +
+  geom_smooth(method = lm, formula = y~x) +
+  theme_bw()
+
+```
+
+
+```{r}
+df |> filter(female_beta > 3.8 & male_beta < 3)
+```
+
+
+```{r}
+mydata |> group_by(sex) |> summarize( mean = mean() )
+```
+
+
+
+## Is there a correlation between BMI and CRP ?
+
+```{r}
+cor.test(mydata$BMI, mydata$CRP_mgL, method = "sp")
+```
+
+## Is there a correlation between BMI and Sool Score
+
+```{r}
+cor.test(mydata$BMI, mydata$stoole_score, method = "sp")
+```
+## Is there a correlation between CRP and Sool Score
+
+```{r}
+cor.test(mydata$CRP_mgL, mydata$stoole_score, method = "sp")
+```
+
+
+
+```{r}
+mt = "Enterotype_Rum"
+x = ivtoolsfit( wdata = mydata,
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pruit_BMI_wGRS_info_hwe_filtered",
+              covariates = c( "imputed_sex","age", "stoole_score", "CRP_mgL"),
+              outcome_model_family = "binomial",
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+x[c("oe_beta","oe_se","oe_P", "MR_P")] 
+```
+
+## DOES BMI drive CRP ??
+
+```{r}
+mt = "CRP_mgL"
+x = ivtoolsfit( wdata = mydata,
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pruit_BMI_wGRS_info_hwe_filtered",
+              covariates = c( "imputed_sex","age"),
+              outcome_model_family = "gaussian",
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+x[c("oe_beta","oe_se","oe_P", "MR_beta","MR_se","MR_P")] 
+```
+
+Does BMI drive stool score?
+
+```{r}
+mt = "stoole_score"
+x = ivtoolsfit( wdata = mydata,
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pruit_BMI_wGRS_info_hwe_filtered",
+              covariates = c( "imputed_sex","age"),
+              outcome_model_family = "gaussian",
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+x[c("oe_beta","oe_se","oe_P", "MR_beta","MR_se","MR_P")] 
+```

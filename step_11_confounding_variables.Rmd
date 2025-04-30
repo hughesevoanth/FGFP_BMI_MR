@@ -1,0 +1,540 @@
+---
+title: "Identifying confounders"
+author: "David Hughes"
+date: "3/16/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ivreg)
+
+source("parameters/pfile.sh")
+source("load.R")
+
+```
+
+
+
+```{r}
+## Define the MetaData table
+meta_data = study_data$meta_data
+
+## Define the Microbial Trait Data
+mt_data = study_data$study_micro_data
+primary_traits = study_data$primary_traits
+primary_traits = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum",
+                   "Div_NumberGenera","Div_Shannon","Div_Chao1",
+                   "MDS1","MDS2",
+                   primary_traits)
+
+## Define the batch_data table
+batch_data = study_data$batch_data
+for(i in 1:8){ batch_data[,i] = as.factor(batch_data[,i])  }
+```
+
+## Build the working data frame
+
+```{r}
+## working data
+mydata = cbind( meta_data, batch_data, mt_data )
+## we will be using imputed BMI as the default BMI
+w = which(colnames(mydata) == "imputed_BMI_online"); colnames(mydata)[w] = "BMI"
+## we will be using imputed sex as the default sex
+w = which(colnames(mydata) == "imputed_sex"); colnames(mydata)[w] = "sex"
+mydata$sex[mydata$sex == "m"] = "male"
+mydata$sex[mydata$sex == "v"] = "female"
+mydata$sex = as.factor(mydata$sex)
+## we will be using imputed age as the default age
+w = which(colnames(mydata) == "imputed_age"); colnames(mydata)[w] = "age"
+mydata$age = as.numeric(mydata$age)
+
+## alter colnames with a "|" as a function below does not like "|" 
+colnames(mydata) = gsub("\\|","__",colnames(mydata))
+
+
+```
+
+
+## Define covariables to test for association with Microbial Traits
+
+```{r}
+## COVARS
+cvs = c( "imputed_hip_circumference",
+         "imputed_waist_circumference",
+         "imputed_WHR",
+         "imputed_WHRadjBMI",
+         "imputed_height",
+         "fasting",
+        colnames(mydata)[c(27:122,136,139, 141:149)]
+        )
+## For each variable tha was recoded remove the original
+w = grep("\\.r", cvs)
+w = cvs[w]
+w = gsub("\\.r","",w)
+r = which(cvs %in% w)
+cvs = cvs[-r]
+## turn chr into factor
+for(i in cvs){
+  if( is.character(mydata[,i]) ){
+    mydata[,i] = as.factor(mydata[,i])
+  }
+}
+## remove the exclusion variables
+w = grep("exclu", cvs)
+cvs = cvs[-w]
+
+## remove diabetes type as it is limited to only those with diabetes
+w = grep("diabetes_type", cvs)
+cvs = cvs[-w]
+
+## make factors
+x = c("have_high_blood_cholesterol.r","have_high_blood_pressure.r","diabetes_type","have_diabetes.r",
+      "limited_fat_diet","fiber_rich_diet", "weight_loss_diet", "gluten_free_diet", "lactose_free_diet", 
+       "is_followingadiet", "is_vegan", "is_vegetarian")
+for(i in x){
+  mydata[, i] = factor(mydata[, i], levels = c(0,1))
+}
+
+```
+
+
+### How many indpendent covariables are there?
+
+```{r}
+## define the temporary working data set
+temp = mydata[, cvs]
+
+## Define an empty matrix
+cvs_CorMat = matrix(0, nrow = length(cvs), ncol = length(cvs), dimnames = list(cvs, cvs))
+
+for(i in 1:length(cvs)){
+  for(j in 1:length(cvs)){
+    # cat(paste0("running ", i , " and ", j, "\n"))
+    x = temp[,i]
+    y = temp[, j]
+    if( class(x) == "factor" & class(y) == "factor" ){
+      o = moosefun::factor_on_factor(x, y)
+      r = o["Crammers_V"]
+    } 
+    if( class(x) == "numeric" & class(y) == "numeric" ){
+      o = moosefun::numeric_on_numeric(x, y) 
+      r = o["rho"]
+    }
+    if( class(x) == "numeric" & class(y) == "factor" ){
+      o = moosefun::factor_on_numeric(cat_values = y, num_values = x)
+      r = o["rho"]
+    }
+    if( class(x) == "factor" & class(y) == "numeric" ){
+      o = moosefun::factor_on_numeric(cat_values = x, num_values = y)
+      r = o["rho"]
+    }
+    cvs_CorMat[i,j] = r
+    
+  }
+}
+
+```
+
+```{r}
+x = cvs_CorMat
+x[is.na(x)] = 0
+pca = prcomp(x, center = FALSE, scale = FALSE)
+sum(summary(pca)[[6]][3,] <0.95) + 1
+
+```
+
+
+```{r, fig.width = 20, fig.height = 10}
+dmat = 1 - abs(cvs_CorMat) 
+dmat[is.na(dmat)] = 1
+dmat = round(dmat, digits = 3)
+dmat = as.dist(dmat)
+nj = hclust( dmat, method = "complete")
+k = cutree(nj, h = 0.8)
+# length( table(k) )
+plot(nj, hang = -1, main = paste0("Possible confounders for FGFP BMI->MT MR; Me = ", length( table(k) ), 
+                                  "\nNumber of PCs to explaine 95% of the variance  = 43") )
+abline(h = 0.8, col = "red", lty = 2, lwd = 2)
+```
+
+```{r,fig.width = 20, fig.height = 10}
+f = paste0(project_results_dir, "figures/confounder_dendrogram.pdf")
+
+pdf(file = f,width = 20, height = 9)
+plot(nj, hang = -1, main = paste0("Possible confounders for FGFP BMI->MT MR; Me = ", length( table(k) ), 
+                                  "\nNumber of PCs to explaine 95% of the variance  = 43") )
+abline(h = 0.8, col = "red", lty = 2, lwd = 2)
+dev.off()
+```
+
+
+```{r, fig.width = 20, fig.height = 10}
+dmat = 1- cvs_CorMat
+dmat[is.na(dmat)] = 1
+dmat = round(dmat, digits = 3)
+dmat = as.dist(dmat)
+nj = hclust( dmat, method = "complete")
+k = cutree(nj, h = 0.8)
+# length( table(k) )
+plot(nj, hang = -1, main = paste0("Possible confounders for FGFP BMI->MT MR; Me = ", length( table(k) ), 
+                                  "\nNumber of PCs to explaine 95% of the variance  = 43") )
+abline(h = 0.8, col = "red", lty = 2, lwd = 2)
+```
+
+
+## run linear models and anova
+
+### AB traits
+
+```{r, warning=FALSE, error=FALSE, message=FALSE}
+## AB TRAITS
+w = grep("_AB", colnames(mydata) )
+q = grep("_RA", colnames(mydata) )
+mts = colnames(mydata)[c(w,q)]
+## add diversity traits to AB run
+div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+mts = c(div, mts)
+      
+## ANALYSIS LOOP
+BatchCors = c()
+for(cv in cvs){
+  cat(paste0("Processing cv ",cv ,"\n" ))
+  out = t( sapply(mts, function(mt){
+    lmfit_v3( wdata = mydata,
+           outcome = mt,
+           exposure = cv,
+           covariates = c("sex","age"),
+           family = "gaussian",
+           weights = NA,
+           rnt_outcome = TRUE)
+  }) )
+  out = as.data.frame(out)
+  for(i in 3:ncol(out)){
+    out[,i] = as.numeric(out[,i])
+  }
+  BatchCors = rbind(BatchCors, out)
+  
+}
+
+# temp_BatchCors = BatchCors
+```
+
+
+### PA traits
+
+```{r, warning=FALSE, error=FALSE, message=FALSE}
+## PA TRAITS
+w = grep("_PA", colnames(mydata) )
+mts = colnames(mydata)[w]
+
+## ANALYSIS LOOP
+for(cv in cvs){
+  cat(paste0("Processing cv ",cv ,"\n" ))
+  out = t( sapply(mts, function(mt){
+    lmfit_v3( wdata = mydata,
+           outcome = mt,
+           exposure = cv,
+           covariates = c("sex","age"),
+           family = "binomial",
+           weights = NA,
+           rnt_outcome = FALSE)
+  }) )
+  out = as.data.frame(out)
+  for(i in 3:ncol(out)){
+    out[,i] = as.numeric(out[,i])
+  }
+  ## ADDING ONTO THE AB modeling above
+  BatchCors = rbind(BatchCors, out)
+}
+
+# temp_BatchCors = BatchCors
+```
+
+
+```{r}
+BatchCors$exposure = unlist(BatchCors$exposure)
+BatchCors$outcome = unlist(BatchCors$outcome)
+```
+
+## Write estimates to file
+
+```{r}
+# f = paste0(project_results_dir, "tables/possible_confounders_on_MTs_20240918.txt")
+f = paste0(project_results_dir, "tables/possible_confounders_on_MTs_20241125.txt")
+# write.table(BatchCors, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+
+# BatchCors = read.table(f, header = TRUE, sep = "\t", as.is = TRUE)
+```
+
+## Each of the 88 tested variables associate with how many MTs ?
+
+```{r}
+poss_confounders_ss = BatchCors |> filter(outcome %in% primary_traits) |> group_by(exposure) %>% 
+  summarize( sig_count = sum(devexp_exposure_P < 0.05/33 ), 
+             avg_dev = mean(devexp_by_exposure),
+             min_dev = min(devexp_by_exposure),
+             max_dev = max(devexp_by_exposure) ) %>% 
+  arrange( desc(sig_count) )
+
+poss_confounders_ss %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+```{r}
+cor.test(mydata$bristol_stool_score, mydata$defecation_days_count)
+cor.test(mydata$bristol_stool_score, mydata$average_defecations_per_day.r)
+cor.test(mydata$defecation_days_count, mydata$average_defecations_per_day.r)
+cor.test(mydata$bristol_stool_score , mydata$previous_relief.r )
+```
+
+
+
+```{r}
+cat(paste0("how many possible confounders associates with at least one MT ?\n"))
+sum(poss_confounders_ss$sig_count>0, na.rm = TRUE)
+cat(paste0("how many possible confounders associates with NO MT ?\n"))
+sum(poss_confounders_ss$sig_count==0, na.rm = TRUE)
+```
+## Each MT is influenced by how many of the 88 tested variables?
+
+```{r}
+MT_confounders_ss = BatchCors %>% group_by(outcome) %>% 
+  summarize( sig_count = sum(devexp_exposure_P < 0.05/43, na.rm = TRUE), 
+             avg_dev = mean(devexp_by_exposure),
+             min_dev = min(devexp_by_exposure),
+             max_dev = max(devexp_by_exposure) ) %>% 
+  arrange( desc(sig_count) )
+
+MT_confounders_ss %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## dendrogram for MTs
+
+```{r}
+mts = unique(BatchCors$outcome)
+mt_mat = cor(mydata[, mts])
+mt_mat[is.na(mt_mat)] = 0
+dmat = as.dist( 1-abs(mt_mat) )
+nj_out = hclust(dmat, method = "complete")
+```
+
+
+```{r}
+x = BatchCors %>% group_by(exposure) %>% 
+  summarize(meanP = mean( -log10(devexp_exposure_P) )) %>% 
+  arrange( desc(meanP) ) %>%
+  dplyr::select(exposure)
+sort_exposure_by_mean_P = x$exposure
+
+############                                                
+           
+x = BatchCors %>% group_by(outcome) %>% 
+  summarize(meanP = mean( -log10(devexp_exposure_P) )) %>% 
+  arrange( desc(meanP) ) %>%
+  dplyr::select(outcome)
+sort_outcome_by_mean_P = x$outcome
+
+```
+
+```{r}
+### ORDER THE EXPOSURES
+# BatchCors$exposure = factor(BatchCors$exposure, levels = sort_exposure_by_mean_P)
+BatchCors$exposure = factor(BatchCors$exposure, levels = nj$labels[nj$order] )
+
+### ORDER THE OUTCOMES
+BatchCors$outcome = gsub("__"," | ",BatchCors$outcome)
+sort_outcome_by_mean_P = nj_out$labels[nj_out$order]
+sort_outcome_by_mean_P = gsub("__"," | ", sort_outcome_by_mean_P )
+
+BatchCors$outcome = factor(BatchCors$outcome, levels = sort_outcome_by_mean_P)
+
+```
+
+
+```{r, fig.width = 15, fig.height = 20}
+plot = BatchCors |> filter(exposure != "time_of_sampling") |> 
+  ggplot(aes(x = exposure, y = outcome)) +
+  geom_raster(aes(fill = -log10(devexp_exposure_P))) +
+  # scale_fill_viridis_c(direction = -1, option = "D") +
+  # scale_fill_gradient2(low = "white", mid = "green4", high = "grey10", midpoint = 40) +
+  # scale_fill_gradient2(low = "white", mid = "grey50", high = "black", midpoint = 30) +
+  scale_fill_gradient2(low = "white", mid = "dodgerblue", high = "black", midpoint = 30) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position="top") +
+  theme(axis.text.y = element_text(size = 2.5))
+
+# f = paste0(project_results_dir, "figures/MT_Covariable_Assoction_TilePlot.pdf")
+# pdf(file = f, width = 15, height = 35)
+# plot
+# dev.off()
+
+plot
+```
+
+
+## Association of Covariables on BMI
+
+```{r}
+BMIcor = t( sapply(cvs, function(cv){
+    lmfit_v3( wdata = mydata,
+           outcome = "BMI",
+           exposure = cv,
+           covariates = c("sex","age"),
+           family = "gaussian",
+           weights = NA,
+           rnt_outcome = FALSE)
+  }) )
+###
+BMIcor = as.data.frame(BMIcor)
+  for(i in 3:ncol(BMIcor)){
+    BMIcor[,i] = as.numeric(BMIcor[,i])
+  }
+BMIcor$exposure = unlist(BMIcor$exposure)
+BMIcor$outcome = unlist(BMIcor$outcome)
+```
+
+
+
+## Write estimates to file
+
+```{r}
+f = paste0(project_results_dir, "tables/possible_confounders_on_BMI_20240918.txt")
+# write.table(BMIcor, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+
+BMIcor = read.table(f, header = TRUE, sep = "\t", as.is = TRUE)
+```
+
+## BMI is associated with what ? P < 0.05/43
+
+```{r}
+BMIcor %>% 
+  filter(BMIcor$devexp_exposure_P < 0.05/43) %>% 
+  arrange(devexp_exposure_P) %>% dplyr::select(exposure, n, devexp_by_exposure, beta, P) |>
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## BMI is associated with what at P < 0.05 & > 0.05/43
+
+```{r}
+BMIcor %>% 
+  filter(BMIcor$devexp_exposure_P < 0.05 & BMIcor$devexp_exposure_P > 0.05/43) %>% 
+  arrange(devexp_exposure_P) %>% dplyr::select(exposure, n, devexp_by_exposure, beta, P) |>
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## Association of Covariables on BMI_GRS
+
+```{r}
+BMIGRScor_v0 = t( sapply(cvs, function(cv){
+    lmfit_v3( wdata = mydata,
+           outcome = "pulit_bmi",
+           exposure = cv,
+           covariates = NA,
+           family = "gaussian",
+           weights = NA,
+           rnt_outcome = FALSE)
+  }) )
+
+###
+BMIGRScor_v0 = as.data.frame(BMIGRScor_v0)
+  for(i in 3:ncol(BMIGRScor_v0)){
+    BMIGRScor_v0[,i] = as.numeric(BMIGRScor_v0[,i])
+  }
+BMIGRScor_v0$exposure = unlist(BMIGRScor_v0$exposure)
+BMIGRScor_v0$outcome = unlist(BMIGRScor_v0$outcome)
+```
+
+## Write estimates to file
+
+```{r}
+f = paste0(project_results_dir, "tables/possible_confounders_on_PRS_20240918.txt")
+# write.table(BMIGRScor_v0, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+
+BMIGRScor_v0 = read.table(f, header = TRUE, sep = "\t", as.is = TRUE)
+```
+
+## What variables associate with the GRS at P < 0.05/43
+
+```{r}
+BMIGRScor_v0 %>% filter(BMIGRScor_v0$devexp_exposure_P < 0.05/43) %>%
+  arrange(devexp_exposure_P) %>% dplyr::select(exposure, n, devexp_by_exposure, beta, se, devexp_exposure_P) |>
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## What variables associate with the GRS at P < 0.05 & P > 0.05/43
+
+```{r}
+BMIGRScor_v0 %>% filter(devexp_exposure_P < 0.05 & devexp_exposure_P > 0.05/43) %>%
+  arrange(devexp_exposure_P) %>% dplyr::select(exposure, n, devexp_by_exposure, beta, devexp_exposure_P) |>
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+### how many MTs did each of the PGS associated variables assocciate with?
+
+```{r}
+v = BMIGRScor_v0 |> filter(BMIGRScor_v0$devexp_exposure_P < 0.05/43) |> pull(exposure)
+
+x = BatchCors |> filter(outcome %in% primary_traits) |>
+  group_by(exposure) |> 
+  summarize( sig_count = sum(devexp_exposure_P < 0.05/33), 
+             avg_dev = mean(devexp_by_exposure),
+             min_dev = min(devexp_by_exposure),
+             max_dev = max(devexp_by_exposure) ) |>
+  arrange( desc(sig_count) ) #|> filter(exposure %in% v)
+
+x %>% knitr::kable() %>% kableExtra::kable_classic()
+
+```
+
+
+```{r}
+BMIGRScor = t( sapply(cvs, function(cv){
+    lmfit_v3( wdata = mydata,
+           outcome = "pulit_bmi",
+           exposure = cv,
+           covariates = c("sex","age"),
+           family = "gaussian",
+           weights = NA,
+           rnt_outcome = FALSE)
+  }) )
+
+###
+BMIGRScor = as.data.frame(BMIGRScor)
+  for(i in 3:ncol(BMIGRScor)){
+    BMIGRScor[,i] = as.numeric(BMIGRScor[,i])
+  }
+BMIGRScor$exposure = unlist(BMIGRScor$exposure)
+BMIGRScor$outcome = unlist(BMIGRScor$outcome)
+```
+
+```{r}
+BMIGRScor %>% filter(BMIGRScor$devexp_exposure_P < 0.05/43) %>%
+  arrange(devexp_exposure_P) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+```{r}
+cat(paste0("***J01_drug_use on BMI***\n"))
+fit = lm(BMI ~ J01_antibiotics, data = mydata)
+anova(fit)[1, 1:5]
+
+
+cat(paste0("\n***J01_drug_use on BMI-GRS***\n"))
+fit = lm(pulit_bmi ~ J01_antibiotics, data = mydata)
+anova(fit)[1, 1:5]
+
+cat(paste0("\n***J01_drug_use on BMI-GRS corrected for sex and age***\n"))
+fit = lm(pulit_bmi ~ sex + age + J01_antibiotics, data = mydata)
+anova(fit)[3, 1:5]
+
+```
+
+
+

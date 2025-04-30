@@ -1,0 +1,1419 @@
+---
+title: "Effect Estimates"
+author: "David Hughes"
+date: "3/16/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ivreg)
+
+source("load.R")
+```
+
+```{r}
+## Define the MetaData table
+meta_data = study_data$meta_data
+
+## Define the Microbial Trait Data
+mt_data = study_data$study_micro_data
+primary_traits = study_data$primary_traits
+primary_traits = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum",
+                   "Div_NumberGenera","Div_Shannon","Div_Chao1",
+                   "MDS1","MDS2",
+                   primary_traits)
+
+## Define the batch_data table
+batch_data = study_data$batch_data
+for(i in 1:8){ batch_data[,i] = as.factor(batch_data[,i])  }
+```
+
+## Build the working data frame
+
+```{r}
+## working data
+mydata = cbind( meta_data, batch_data, mt_data )
+## we will be using imputed BMI as the default BMI
+w = which(colnames(mydata) == "imputed_BMI_online"); colnames(mydata)[w] = "BMI"
+## we will be using imputed sex as the default sex
+w = which(colnames(mydata) == "imputed_sex"); colnames(mydata)[w] = "sex"
+mydata$sex[mydata$sex == "m"] = "male"
+mydata$sex[mydata$sex == "v"] = "female"
+mydata$sex = as.factor(mydata$sex)
+## we will be using imputed age as the default age
+w = which(colnames(mydata) == "imputed_age"); colnames(mydata)[w] = "age"
+mydata$age = as.numeric(mydata$age)
+
+## alter colnames with a "|" as a function below does not like "|" 
+colnames(mydata) = gsub("\\|","__",colnames(mydata))
+
+
+```
+
+
+```{r}
+library(mgcv)
+
+## Does age have a non-linear effect on BMI?
+fit0 = gam(BMI ~ sex + age, data = mydata )
+fit = gam(BMI ~ sex + s(age), data = mydata )
+p = anova(fit0, fit, test = "LRT")[2,5]
+
+# mydata |> ggplot(aes(x = age, y = BMI)) +
+#   geom_smooth(method = "gam", formula = y~s(x)) +
+#   geom_smooth(method = "lm", formula = y~x, color = "black") +
+#   labs(subtitle = paste0("p for smooth age effect = ", format(p, scientific = TRUE, digits = 4) ) )
+#   theme_bw()
+```
+
+```{r}
+## Does GRS have a non-linear effect on BMI?
+fit0 = gam(BMI ~ sex + s(age) + pulit_bmi, data = mydata )
+fit = gam(BMI ~ sex + s(age) + s(pulit_bmi), data = mydata )
+anova(fit0, fit, test = "LRT")
+
+```
+- there is NO non-linear effect of GRS on BMI. the Resid. Dev is the same and the edf for pulit_bmi is 1. 
+
+
+
+# Derive the observational and MR estimates
+
+## Run the full data set BMI analysis
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits + Ratio Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  out = t( 
+    sapply(mts, function(mt){
+      ivtoolsfit( wdata = mydata,
+                  outcome = mt,
+                  exposure = "BMI",
+                  instrument = "pulit_bmi",
+                  covariates = c( "sex","age"),
+                  outcome_model_family = modtype,
+                  exposure_model_family = "gaussian",
+                  weights = NA,
+                  rnt_outcome = TRUE)
+      } ) 
+    )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "all"
+  
+  ## data out
+  BMI_models = rbind(BMI_models, out)
+}
+
+## redefine the RA MT trait names
+BMI_models$MR_outcome = gsub("__","|",BMI_models$MR_outcome)
+# rownames(BMI_models) = BMI_models$MR_outcome
+```
+
+## number of  associaitons
+
+```{r}
+nrow(BMI_models |> filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) )
+```
+
+
+```{r}
+BMI_models |>
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  # dplyr::select(MR_outcome, oe_beta, oe_P, MR_beta, MR_P) %>%
+  dplyr::select(oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+
+```
+
+## Run the BMI analysis for females
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_female_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "female")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "females"
+  
+  ## data out
+  BMI_female_models = rbind( BMI_female_models, out)
+}
+## redefine the RA MT trait names
+BMI_female_models$MR_outcome = gsub("__","|",BMI_female_models$MR_outcome)
+
+```
+
+
+## number of Female associaitons
+
+```{r}
+nrow(BMI_female_models |> filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) )
+```
+
+
+```{r}
+BMI_female_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  dplyr::select(oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## Run the BMI analysis for females using the FEMALE GRS
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_female_fGRS_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "female")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi_females",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "females_fGRS"
+  
+  ## data out
+  BMI_female_fGRS_models = rbind( BMI_female_fGRS_models, out)
+}
+
+BMI_female_fGRS_models$MR_outcome = gsub("__","|", BMI_female_fGRS_models$MR_outcome)
+```
+
+
+```{r}
+nrow(BMI_female_fGRS_models %>% filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33))
+```
+
+
+```{r}
+BMI_female_fGRS_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  dplyr::select( oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% 
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Run the BMI analysis for males
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_male_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "male")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "males"
+  
+  ## data out
+  BMI_male_models = rbind(BMI_male_models, out)
+  
+  
+}
+
+BMI_male_models$MR_outcome = gsub("__","|", BMI_male_models$MR_outcome)
+
+```
+
+
+
+```{r}
+nrow(BMI_male_models %>% filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33))
+```
+
+```{r}
+BMI_male_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  dplyr::select(oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+## Run the BMI analysis for males using the MALES only GRS
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_male_mGRS_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "male")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi_males",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "males_mGRS"
+  
+  ## data out
+  BMI_male_mGRS_models = rbind(BMI_male_mGRS_models, out)
+  
+  
+}
+
+BMI_male_mGRS_models$MR_outcome = gsub("__","|", BMI_male_mGRS_models$MR_outcome)
+```
+
+
+
+```{r}
+nrow(BMI_male_mGRS_models %>% filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33))
+```
+
+
+
+```{r}
+BMI_male_mGRS_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05) %>% 
+  dplyr::select(oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+save estimates together in a list object
+
+```{r}
+Derived_Estimates = list(BMI = BMI_models,
+                         BMI_females = BMI_female_models,
+                         BMI_males = BMI_male_models, 
+                         BMI_females_fGRS = BMI_female_fGRS_models,
+                         BMI_males_mGRS = BMI_male_mGRS_models)
+```
+
+## Save the estimates as an Rdata file
+
+```{r}
+f = paste0(project_results_dir, "Derived_Estimates_20240917.Rdata")
+save(Derived_Estimates, file = f)
+```
+
+
+
+## Merge BMI the short data together
+
+```{r}
+bmi_merged = rbind(Derived_Estimates$BMI, 
+                   Derived_Estimates$BMI_females, 
+                   Derived_Estimates$BMI_males,
+                   Derived_Estimates$BMI_females_fGRS, 
+                   Derived_Estimates$BMI_males_mGRS )
+f = paste0(project_results_dir, "tables/bmi_obs_mr_estimates_20240917.txt")
+write.table(bmi_merged, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+
+## Average Variance Explained in exposure by instrument
+
+```{r}
+unlist( lapply(Derived_Estimates, function(x){ mean(x$ei_eta_sq)  }) )
+```
+
+## BMI MTs causally associated with BMI
+
+```{r}
+Derived_Estimates$BMI %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_n,  MR_beta, MR_se, MR_P, MR_Wald_F, trait_type, analysis_name) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+# Sensitivity Analysis
+
+## Run the full data set BMI SENSITIVITY analysis
+
+Variables that associate with the pulit bmi PRS and with MTs:
+
+  ## meet multiple test correction
+  - have_high_blood_pressure.r (primary mts = 6)
+  - have_diabetes.r (primary mts = 19)
+  - weight_loss_diet (mts = 0) 
+  - followedadiet_last_week.r (mts = 8) 
+  
+  ## DO NOT meet multiple test correction
+  - bristol_stool_score (primary mts = 81)
+  - total_read_count (primary mts = 75)
+  - J01_antibiotics (primary mts = 58)
+  - smoking_NEC.r (primary mts = 18)
+  - house_hold_monthl_net_income.r (primary mts = 2)
+  
+```{r}
+suffix = c("AB","PA")
+
+## COVARAIATE FOR THE SENESITIVITY ANALYSIS
+covars2run = c( "sex","age", 
+                
+                "total_read_count", 
+                "bristol_stool_score",
+                "J01_antibiotics",
+                "smoking_NEC.r",
+                "house_hold_monthl_net_income.r",
+                
+                "have_high_blood_pressure.r",
+                "have_diabetes.r",
+                "followedadiet_last_week.r"
+                # "weight_loss_diet",
+                
+                # "is_followingadiet", 
+                # "drilled.cut", 
+                # "sugar_free_soda_average_consumption_last_week",
+                # "pain_score",
+                # "diarrhea_last_week.r",
+                
+                # "defecation_days_count",
+                # "average_defecations_per_day.r",
+                # "previous_relief.r"
+                )
+
+## Define an empty object
+BMI_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata,
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = covars2run,
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  out$analysis_name = "all"
+  
+  ## data out
+  BMI_models = rbind(BMI_models, out)
+  
+}
+
+BMI_models$MR_outcome = gsub("__","|", BMI_models$MR_outcome)
+```
+
+## Number of observations
+
+```{r}
+nrow(BMI_models %>% filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33))
+```
+
+
+```{r}
+BMI_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  dplyr::select( oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+```{r}
+temp = data.frame( outcome = Derived_Estimates$BMI$MR_outcome, 
+                   trait_type = Derived_Estimates$BMI$trait_type,
+                   mod0_beta = Derived_Estimates$BMI$MR_beta,
+                   mod0_P = as.factor( ifelse(Derived_Estimates$BMI$MR_P < 0.05/33, "yes", "no" ) ),
+                   mod0_se = Derived_Estimates$BMI$MR_se,
+                   mod1_beta = BMI_models$MR_beta,
+                   mod1_se = BMI_models$MR_se )
+### PLOT
+temp |> ggplot(aes(x = mod0_beta, y = mod1_beta)) +
+  geom_point( aes(shape = trait_type, color = mod0_P), size = 2, alpha = 0.5 ) +
+  scale_color_brewer(palette = "Set1") +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "grey40") +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "grey40") +
+  # geom_smooth(method = lm, formula = y ~ x) +
+  geom_abline(slope = 1, intercept = 0, color = "grey20", linetype = "dashed") +
+  theme_bw() +
+  labs(x = "primary model beta", y = "sensitivity model beta", color = "association", shape = "trait type")
+                   
+```
+
+
+
+## Run the BMI SENSITIVITY analysis for females
+
+```{r}
+## COVARAIATE FOR THE SENESITIVITY ANALYSIS
+covars2run = c( "age", 
+                
+                "total_read_count", 
+                "bristol_stool_score",
+                "J01_antibiotics",
+                "smoking_NEC.r",
+                "house_hold_monthl_net_income.r",
+                
+                "have_high_blood_pressure.r",
+                "have_diabetes.r",
+                "followedadiet_last_week.r" 
+                )
+
+## Define an empty object
+BMI_female_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    mts = mts[!mts %in% c("G_Catenibacterium_0.127_PA" , "G_Mitsuokella_0.117_PA")]
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "female")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = covars2run,
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  out$analysis_name = "females"
+  
+  ## data out
+  BMI_female_models = rbind(BMI_female_models, out)
+  
+}
+##
+BMI_female_models$MR_outcome = gsub("__","|", BMI_female_models$MR_outcome)
+##
+m = match(BMI_models$MR_outcome, BMI_female_models$MR_outcome)
+BMI_female_models = BMI_female_models[m,]
+rownames(BMI_female_models) = rownames(BMI_models)
+BMI_female_models$MR_outcome = BMI_models$MR_outcome
+```
+
+
+```{r}
+BMI_female_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  dplyr::select(oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+## Run the BMI SENSITIVITY analysis for males
+
+```{r}
+## COVARAIATE FOR THE SENESITIVITY ANALYSIS
+covars2run = c( "age", 
+                
+                "total_read_count", 
+                "bristol_stool_score",
+                "J01_antibiotics",
+                "smoking_NEC.r",
+                "house_hold_monthl_net_income.r",
+                
+                "have_high_blood_pressure.r",
+                "have_diabetes.r",
+                "followedadiet_last_week.r"  )
+
+## Define an empty object
+BMI_male_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    mts = mts[!mts %in% c("O_unclassified_C_Deltaproteobacteria_0.132_PA", "F_unclassified_C_Deltaproteobacteria_0.132_PA",
+                          "G_Cloacibacillus_0.119_PA", "G_Enterococcus_0.123_PA", "G_Gemmiger_0.886_PA",
+                          "G_unclassified_C_Deltaproteobacteria_0.132_PA")]
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "male")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = covars2run,
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  out$analysis_name = "males"
+  
+  ## data out
+  BMI_male_models = rbind(BMI_male_models, out)
+  
+  
+}
+##
+# BMI_female_models$MR_outcome = gsub("__","|", BMI_female_models$MR_outcome)
+##
+# m = match(BMI_models$MR_outcome, BMI_male_models$MR_outcome)
+m = match( rownames(BMI_models), rownames(BMI_male_models) )
+BMI_male_models = BMI_male_models[m,]
+rownames(BMI_male_models) = rownames(BMI_models)
+BMI_male_models$MR_outcome = BMI_models$MR_outcome
+
+```
+
+
+
+```{r}
+BMI_male_models %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05) %>% 
+  dplyr::select( oe_beta, oe_P, MR_beta, MR_P) %>% 
+  arrange(MR_P) %>% knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+## Run the FEMALE SPECIFIC BMI SENSITIVITY analysis for females
+
+```{r}
+## COVARAIATE FOR THE SENESITIVITY ANALYSIS
+covars2run = c( "age", 
+                
+                "total_read_count", 
+                "bristol_stool_score",
+                "J01_antibiotics",
+                "smoking_NEC.r",
+                "house_hold_monthl_net_income.r",
+                
+                "have_high_blood_pressure.r",
+                "have_diabetes.r",
+                "followedadiet_last_week.r"
+                )
+
+## Define an empty object
+BMI_females_fGRS = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    mts = mts[!mts %in% c("G_Catenibacterium_0.127_PA" , "G_Mitsuokella_0.117_PA")]
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "female")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi_females",
+              covariates = covars2run,
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  out$analysis_name = "females_fGRS"
+  
+  ## data out
+  BMI_females_fGRS = rbind(BMI_females_fGRS, out)
+  
+}
+##
+# BMI_females_fGRS$MR_outcome = gsub("__","|", BMI_females_fGRS$MR_outcome)
+##
+# m = match(BMI_models$MR_outcome, BMI_females_fGRS$MR_outcome)
+m = match( rownames(BMI_models), rownames(BMI_females_fGRS) )
+BMI_females_fGRS = BMI_females_fGRS[m,]
+rownames(BMI_females_fGRS) = rownames(BMI_models)
+BMI_females_fGRS$MR_outcome = BMI_models$MR_outcome
+
+```
+
+## Run the MALE SPECIFIC BMI SENSITIVITY analysis for males
+
+```{r}
+## COVARAIATE FOR THE SENESITIVITY ANALYSIS
+covars2run = c( "age", 
+                
+                "total_read_count", 
+                "bristol_stool_score",
+                "J01_antibiotics",
+                "smoking_NEC.r",
+                "house_hold_monthl_net_income.r",
+                
+                "have_high_blood_pressure.r",
+                "have_diabetes.r",
+                "followedadiet_last_week.r"  )
+
+## Define an empty object
+BMI_males_mGRS = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    ## Taxa that run into a singularity issue
+    mts = mts[!mts %in% c("O_unclassified_C_Deltaproteobacteria_0.132_PA", "F_unclassified_C_Deltaproteobacteria_0.132_PA",
+                          "G_Cloacibacillus_0.119_PA", "G_Enterococcus_0.123_PA", "G_Gemmiger_0.886_PA",
+                          "G_unclassified_C_Deltaproteobacteria_0.132_PA")]
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "male")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi_males",
+              covariates = covars2run,
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = TRUE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  out$analysis_name = "males_mGRS"
+  
+  ## data out
+  BMI_males_mGRS = rbind(BMI_males_mGRS, out)
+  
+}
+##
+
+m = match( rownames(BMI_models), rownames(BMI_males_mGRS) )
+BMI_males_mGRS = BMI_males_mGRS[m,]
+rownames(BMI_males_mGRS) = rownames(BMI_models)
+BMI_males_mGRS$MR_outcome = BMI_models$MR_outcome
+
+```
+
+
+
+save estimates together in a list object
+
+```{r}
+BMI_sensitivity = list(BMI = BMI_models,
+                       BMI_females = BMI_female_models,
+                       BMI_males = BMI_male_models,
+                       BMI_females_fGRS = BMI_females_fGRS,
+                       BMI_males_mGRS = BMI_males_mGRS)
+```
+
+## Save the estimates as an Rdata file
+
+```{r}
+# f = paste0(project_results_dir, "BMI_sensitivity_20240919.Rdata")
+f = paste0(project_results_dir, "BMI_sensitivity_20241206.Rdata")
+save(BMI_sensitivity, file = f)
+```
+
+
+
+## Merge BMI the short data together
+
+```{r}
+bmi_sensitivity_merged = rbind(BMI_sensitivity$BMI, 
+                               BMI_sensitivity$BMI_females, 
+                               BMI_sensitivity$BMI_males,
+                               BMI_sensitivity$BMI_females_fGRS, 
+                               BMI_sensitivity$BMI_males_mGRS)
+# f = paste0(project_results_dir, "tables/bmi_obs_mr_sensitivity_estimates_20240919.txt")
+f = paste0(project_results_dir, "tables/bmi_obs_mr_sensitivity_estimates_20241206.txt")
+write.table(bmi_sensitivity_merged, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+
+
+```{r}
+BMI_sensitivity$BMI %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05/33) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_n,  MR_beta, MR_se, MR_P, MR_Wald_F, trait_type, analysis_name) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+```{r}
+BMI_sensitivity$BMI_females %>% 
+  filter(MR_outcome %in% primary_traits & MR_P <= 0.05) %>% 
+  arrange(MR_P) %>% 
+  dplyr::select( MR_n,  MR_beta, MR_se, MR_P, MR_Wald_F, trait_type, analysis_name) %>%
+  knitr::kable() %>% kableExtra::kable_classic()
+```
+
+
+
+
+
+
+# *** NO TRANSFORMATION *** Derive the observational and MR estimates
+
+## Run the full data set BMI analysis
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits + Ratio Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  out = t( 
+    sapply(mts, function(mt){
+      ivtoolsfit( wdata = mydata,
+                  outcome = mt,
+                  exposure = "BMI",
+                  instrument = "pulit_bmi",
+                  covariates = c( "sex","age"),
+                  outcome_model_family = modtype,
+                  exposure_model_family = "gaussian",
+                  weights = NA,
+                  rnt_outcome = FALSE)
+      } ) 
+    )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "all"
+  
+  ## data out
+  BMI_models = rbind(BMI_models, out)
+}
+
+## redefine the RA MT trait names
+BMI_models$MR_outcome = gsub("__","|",BMI_models$MR_outcome)
+
+```
+
+
+
+## Run the BMI analysis for females
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_female_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "female")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = FALSE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "females"
+  
+  ## data out
+  BMI_female_models = rbind( BMI_female_models, out)
+}
+## redefine the RA MT trait names
+BMI_female_models$MR_outcome = gsub("__","|",BMI_female_models$MR_outcome)
+
+```
+
+
+
+## Run the BMI analysis for females using the FEMALE GRS
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_female_fGRS_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "female")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi_females",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = FALSE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "females_fGRS"
+  
+  ## data out
+  BMI_female_fGRS_models = rbind( BMI_female_fGRS_models, out)
+}
+## redefine the RA MT trait names
+BMI_female_fGRS_models$MR_outcome = gsub("__","|",BMI_female_fGRS_models$MR_outcome)
+
+```
+
+
+## Run the BMI analysis for males
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_male_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "male")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = FALSE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "males"
+  
+  ## data out
+  BMI_male_models = rbind(BMI_male_models, out)
+}
+## redefine the RA MT trait names
+BMI_male_models$MR_outcome = gsub("__","|",BMI_male_models$MR_outcome)
+
+```
+
+
+## Run the BMI analysis for males using the MALES only GRS
+
+```{r}
+suffix = c("AB","PA")
+
+## Define an empty object
+BMI_male_mGRS_models = c()
+
+for(i in 1:2){
+   ## Abundance Traits
+   if(i == 1){
+      w = grep("_AB", colnames(mydata) )
+      q = grep("_RA", colnames(mydata) )
+      mts = colnames(mydata)[c(w,q)]
+      ## add diversity traits to AB run
+      div = c("MDS1","MDS2","Div_NumberGenera","Div_Shannon","Div_Chao1")
+      mts = c(div, mts)
+      modtype = "gaussian"
+   }  
+   
+  ## Present Absent Traits
+  if(i == 2){
+    w = grep("_PA", colnames(mydata))
+    mts = colnames(mydata)[w] 
+    ## add enterotype traits to PA run
+    ent = c("Enterotype_Bact1","Enterotype_Bact2","Enterotype_Prev","Enterotype_Rum")
+    mts = c(ent, mts)
+    modtype = "binomial"
+  } 
+  
+  ### RUN THE ANALYSIS
+  w = which(mydata$sex == "male")
+  out = t( sapply(mts, function(mt){
+    ivtoolsfit( wdata = mydata[w,],
+              outcome = mt,
+              exposure = "BMI",
+              instrument = "pulit_bmi_males",
+              covariates = c("age"),
+              outcome_model_family = modtype,
+              exposure_model_family = "gaussian",
+              weights = NA,
+              rnt_outcome = FALSE)
+      } ) )
+  ## (IV.d) Define as a data frame
+  out = as.data.frame(out)
+  ## (IV.e) Make numeric
+  for(k in 4:ncol(out)){  out[,k] = as.numeric(out[,k])  }
+  ## (IV.f) Define trait
+  out$trait_type = suffix[i]
+  ## (IV.g) redefine column 14 as it can be a tvalue or zvalue depending on logistic or linear regression
+  colnames(out)[14] = "oe_tzvalue"
+  ## add analysis pop
+  out$analysis_name = "males_mGRS"
+  
+  ## data out
+  BMI_male_mGRS_models = rbind(BMI_male_mGRS_models, out)
+}
+## redefine the RA MT trait names
+BMI_male_mGRS_models$MR_outcome = gsub("__","|",BMI_male_mGRS_models$MR_outcome)
+
+```
+
+save estimates together in a list object
+
+```{r}
+Derived_Estimates_NOtransform = list(BMI = BMI_models,
+                         BMI_females = BMI_female_models,
+                         BMI_males = BMI_male_models, 
+                         BMI_females_fGRS = BMI_female_fGRS_models,
+                         BMI_males_mGRS = BMI_male_mGRS_models)
+```
+
+## Save the estimates as an Rdata file
+
+```{r}
+f = paste0(project_results_dir, "Derived_Estimates_NOtransform_20240919.Rdata")
+save(Derived_Estimates_NOtransform, file = f)
+```
+
+
+
+## Merge BMI the short data together
+
+```{r}
+bmi_merged = rbind(Derived_Estimates_NOtransform$BMI, 
+                   Derived_Estimates_NOtransform$BMI_females, 
+                   Derived_Estimates_NOtransform$BMI_males,
+                   Derived_Estimates_NOtransform$BMI_females_fGRS, 
+                   Derived_Estimates_NOtransform$BMI_males_mGRS )
+f = paste0(project_results_dir, "tables/bmi_obs_mr_estimates_NOtransformation_20240919.txt")
+write.table(bmi_merged, file = f, row.names = FALSE, col.names = TRUE, sep = "\t", quote = TRUE)
+```
+
+
+
+
