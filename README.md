@@ -1,4 +1,4 @@
-# FGFP BMI --> Microbiome
+# FGFP BMI --> Microbiome Mendelian Randomization
 
 ## research question
 Does elevated levels of adiposity, as measured by BMI, have an observational and causal effect on gut microbiome variation?
@@ -27,6 +27,7 @@ Here we will be evaluating the observational and causal relationship between BMI
 	
 ### developers
 1. David A Hughes
-2. Kaitlin Wade
-3. Charlie hatcher
+2. Laura Corbin
+3. Sebastian Proost
+4. Kaitlin Wade
 
